@@ -719,50 +719,38 @@ elif app_mode == "Single Student Check":
                     
                     # What-if analysis
                     st.subheader("What-If Analysis")
-                   # Inside your Single Student Check section (after the form submission check):
-
-if submitted:
-    # ... your existing prediction results display code ...
-    
-    # What-if Analysis Section - CORRECTED VERSION
-    st.subheader("What-If Analysis")
-    st.markdown("See how changes might affect this student's risk:")
-    
-    # Create columns for the sliders
-    what_if_cols = st.columns(2)
-    with what_if_cols[0]:
-        new_attendance = st.slider(
-            "Change attendance days",
-            min_value=0,
-            max_value=present_days + absent_days,
-            value=present_days,
-            key="attendance_slider"  # Added unique key
-        )
-    with what_if_cols[1]:
-        new_performance = st.slider(
-            "Change academic performance",
-            min_value=0,
-            max_value=100,
-            value=academic_performance,
-            key="performance_slider"  # Added unique key
-        )
-    
-    # The critical fix - button must be at the same level as sliders, not nested
-    if st.button("Run Scenario Analysis", key="scenario_button"):
-        changes = {
-            'Present_Days': new_attendance,
-            'Absent_Days': (present_days + absent_days) - new_attendance,
-            'Academic_Performance': new_performance
-        }
-        original_risk, new_risk = what_if_analysis(input_data, changes)
-        
-        # Display results in an expander for better organization
-        with st.expander("Scenario Analysis Results", expanded=True):
-            st.markdown(f"""
-            - **Original Risk**: {original_risk:.1%}
-            - **New Risk**: {new_risk:.1%}
-            - **Change**: {(new_risk - original_risk):.1%} points
-            """)
+                    st.markdown("See how changes might affect this student's risk:")
+                    
+                    what_if_cols = st.columns(2)
+                    with what_if_cols[0]:
+                        new_attendance = st.slider(
+                            "Change attendance days",
+                            min_value=0,
+                            max_value=present_days + absent_days,
+                            value=present_days
+                        )
+                    with what_if_cols[1]:
+                        new_performance = st.slider(
+                            "Change academic performance",
+                            min_value=0,
+                            max_value=100,
+                            value=academic_performance
+                        )
+                    
+                    if st.button("Run Scenario Analysis"):
+                        changes = {
+                            'Present_Days': new_attendance,
+                            'Absent_Days': (present_days + absent_days) - new_attendance,
+                            'Academic_Performance': new_performance
+                        }
+                        original_risk, new_risk = what_if_analysis(input_data, changes)
+                        
+                        st.markdown(f"""
+                        - **Original Risk**: {original_risk:.1%}
+                        - **New Risk**: {new_risk:.1%}
+                        - **Change**: {(new_risk - original_risk):.1%} points
+                        """)
+                    
                     # Recommendations
                     st.subheader("Recommended Actions")
                     if risk_level == "High":
