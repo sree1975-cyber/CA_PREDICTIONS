@@ -717,48 +717,73 @@ elif app_mode == "Single Student Check":
                         st.subheader("Historical Trends")
                         plot_student_history(student_id)
                     
-                   # What-if analysis - PROPERLY INDENTED VERSION
-                    if submitted:  # This ensures we only show after form submission
+                    # In your form handling section:
+                    with st.form(key='student_analysis_form'):
+                        # Your existing form elements...
+                        submitted = st.form_submit_button("Analyze Student")
+                    
+                    if submitted:
+                        # Your existing prediction results display...
+                    
+                        # What-if Analysis Section - FINAL WORKING VERSION
                         st.subheader("What-If Analysis")
                         st.markdown("See how changes might affect this student's risk:")
                         
-                        # Create columns for the sliders
-                        what_if_cols = st.columns(2)
+                        # Initialize session state for what-if parameters
+                        if 'what_if' not in state:
+                            state.what_if = {
+                                'attendance': present_days,
+                                'performance': academic_performance
+                            }
+                    
+                        # Create columns for sliders
+                        col1, col2 = st.columns(2)
                         
-                        with what_if_cols[0]:
-                            new_attendance = st.slider(
+                        with col1:
+                            state.what_if['attendance'] = st.slider(
                                 "Change attendance days",
                                 min_value=0,
                                 max_value=present_days + absent_days,
-                                value=present_days,
-                                key="what_if_attendance"  # Unique key
+                                value=state.what_if['attendance'],
+                                key="what_if_attendance_slider"
                             )
                         
-                        with what_if_cols[1]:
-                            new_performance = st.slider(
+                        with col2:
+                            state.what_if['performance'] = st.slider(
                                 "Change academic performance",
                                 min_value=0,
                                 max_value=100,
-                                value=academic_performance,
-                                key="what_if_performance"  # Unique key
+                                value=state.what_if['performance'],
+                                key="what_if_performance_slider"
                             )
                         
-                        # The action button - at same level as sliders
-                        if st.button("Run Scenario Analysis", key="scenario_button"):
-                            changes = {
-                                'Present_Days': new_attendance,
-                                'Absent_Days': (present_days + absent_days) - new_attendance,
-                                'Academic_Performance': new_performance
-                            }
-                            original_risk, new_risk = what_if_analysis(input_data, changes)
-                            
-                            # Display results
-                            st.markdown(f"""
-                            ### Scenario Results:
-                            - **Original Risk**: {original_risk:.1%}
-                            - **New Risk**: {new_risk:.1%}
-                            - **Change**: {(new_risk - original_risk):+.1%} points
-                            """)
+                        # Scenario analysis button and logic
+                        scenario_clicked = st.button(
+                            "Run Scenario Analysis", 
+                            key="what_if_scenario_button"
+                        )
+                        
+                        if scenario_clicked:
+                            with st.spinner("Analyzing scenario..."):
+                                changes = {
+                                    'Present_Days': state.what_if['attendance'],
+                                    'Absent_Days': (present_days + absent_days) - state.what_if['attendance'],
+                                    'Academic_Performance': state.what_if['performance']
+                                }
+                                
+                                try:
+                                    original_risk, new_risk = what_if_analysis(input_data, changes)
+                                    
+                                    st.success("Scenario Analysis Complete")
+                                    st.markdown(f"""
+                                    ### Results:
+                                    - **Original Risk**: {original_risk:.1%}
+                                    - **New Risk**: {new_risk:.1%}
+                                    - **Change**: {(new_risk - original_risk):+.1%} points
+                                    """)
+                                    
+                                except Exception as e:
+                                    st.error(f"Scenario analysis failed: {str(e)}")
 
 # Advanced Analytics Section
 elif app_mode == "Advanced Analytics":
