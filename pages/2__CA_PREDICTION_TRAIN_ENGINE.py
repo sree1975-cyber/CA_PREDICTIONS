@@ -737,7 +737,8 @@ elif app_mode == "Single Student Check":
                             value=academic_performance
                         )
                     
-                    if st.button("Run Scenario Analysis"):
+                    #if st.button("Run Scenario Analysis"):
+                    if st.button("Run Scenario Analysis", key="scenario_button"):
                         changes = {
                             'Present_Days': new_attendance,
                             'Absent_Days': (present_days + absent_days) - new_attendance,
