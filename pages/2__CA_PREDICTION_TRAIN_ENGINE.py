@@ -4,17 +4,23 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from xgboost import XGBClassifier
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 from sklearn.preprocessing import LabelEncoder
 import joblib
-from datetime import datetime
+from datetime import datetime, timedelta
 import tempfile
 import base64
+import shap
+from geopy.geocoders import Nominatim
+import folium
+from streamlit_folium import folium_static
+import matplotlib.pyplot as plt
 
 # Configure the app
 st.set_page_config(
-    page_title="Chronic Absenteeism Predictor",
+    page_title="Enhanced Chronic Absenteeism Predictor",
     page_icon="📊",
     layout="wide"
 )
@@ -28,6 +34,7 @@ st.markdown("""
     .risk-medium {color: #ffa500; font-weight: bold;}
     .risk-low {color: #2ecc71; font-weight: bold;}
     .sidebar .sidebar-content {background-color: #f8f9fa;}
+    .shap-watermark {display: none !important;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -38,18 +45,21 @@ if 'label_encoders' not in st.session_state:
     st.session_state.label_encoders = {}
 if 'citywide_mode' not in st.session_state:
     st.session_state.citywide_mode = False
-
-# Title and description
-st.title("🏫 Chronic Absenteeism Early Warning System")
-st.markdown("Predict students at risk of chronic absenteeism (CA) using historical patterns and current data.")
-
-# Sidebar navigation
-st.sidebar.title("Navigation")
-app_mode = st.sidebar.radio("Select Mode", 
-                          ["System Training", 
-                           "Batch Prediction", 
-                           "Single Student Check",
-                           "Advanced Analytics"])
+if 'current_df' not in st.session_state:
+    st.session_state.current_df = pd.DataFrame()
+if 'historical_data' not in st.session_state:
+    st.session_state.historical_data = pd.DataFrame()
+if 'student_history' not in st.session_state:
+    st.session_state.student_history = {}
+if 'risk_thresholds' not in st.session_state:
+    st.session_state.risk_thresholds = {'low': 0.3, 'medium': 0.7, 'high': 1.0}
+if 'interventions' not in st.session_state:
+    st.session_state.interventions = {
+        'Counseling': {'cost': 500, 'effectiveness': 0.3},
+        'Mentorship': {'cost': 300, 'effectiveness': 0.2},
+        'Parent Meeting': {'cost': 200, 'effectiveness': 0.15},
+        'After-school Program': {'cost': 400, 'effectiveness': 0.25}
+    }
 
 # Helper functions
 def preprocess_data(df, is_training=True):
@@ -79,7 +89,7 @@ def preprocess_data(df, is_training=True):
     return df
 
 def train_model(df):
-    """Train XGBoost model on the provided data"""
+    """Train ensemble model on the provided data"""
     try:
         # Preprocess data
         df_processed = preprocess_data(df)
@@ -94,7 +104,7 @@ def train_model(df):
         unique_values = df_processed['CA_Status'].unique()
         if set(unique_values) != {0, 1}:
             st.error(f"Target variable must be binary (0/1). Found values: {unique_values}")
-            return None, None
+            return None, None, None
         
         # Split data
         X = df_processed.drop(['CA_Status', 'Student_ID'], axis=1, errors='ignore')
@@ -104,25 +114,43 @@ def train_model(df):
             X, y, test_size=0.2, random_state=42
         )
         
-        # Train model with explicit binary classification parameters
-        model = XGBClassifier(
+        # Train XGBoost model
+        xgb = XGBClassifier(
             n_estimators=150,
             max_depth=5,
             learning_rate=0.1,
-            objective='binary:logistic',  # Explicitly set binary classification
+            objective='binary:logistic',
             random_state=42,
-            eval_metric='logloss'  # Appropriate metric for binary classification
+            eval_metric='logloss'
         )
+        
+        # Train Random Forest model
+        rf = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=5,
+            random_state=42
+        )
+        
+        # Create ensemble model
+        model = VotingClassifier(
+            estimators=[('xgb', xgb), ('rf', rf)],
+            voting='soft'
+        )
+        
         model.fit(X_train, y_train)
         
         # Evaluate
         y_pred = model.predict(X_test)
         report = classification_report(y_test, y_pred, output_dict=True)
         
-        return model, report
+        # Generate SHAP values
+        explainer = shap.TreeExplainer(model.named_estimators_['xgb'])
+        shap_values = explainer.shap_values(X_train)
+        
+        return model, report, (explainer, shap_values, X_train)
     except Exception as e:
         st.error(f"Error in model training: {str(e)}")
-        return None, None
+        return None, None, None
 
 def predict_ca_risk(input_data, model):
     """Predict CA risk for input data"""
@@ -145,7 +173,7 @@ def predict_ca_risk(input_data, model):
             df_processed = df_processed[model.feature_names_in_]
         
         # Predict
-        if isinstance(model, XGBClassifier):
+        if isinstance(model, (XGBClassifier, VotingClassifier)):
             risk = model.predict_proba(df_processed)[:, 1]
         else:
             risk = model.predict(df_processed)
@@ -155,6 +183,166 @@ def predict_ca_risk(input_data, model):
         st.error(f"Prediction error: {str(e)}")
         return None
 
+def plot_shap_summary(explainer, shap_values, features):
+    """Create SHAP summary plot"""
+    st.subheader("SHAP Feature Importance")
+    fig, ax = plt.subplots()
+    shap.summary_plot(shap_values, features, plot_type="bar", show=False)
+    st.pyplot(fig)
+    plt.clf()
+
+def plot_student_history(student_id):
+    """Plot historical trends for a student"""
+    if student_id in st.session_state.student_history:
+        history = st.session_state.student_history[student_id]
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter(
+            x=history['Date'],
+            y=history['Attendance_Percentage'],
+            name='Attendance %',
+            line=dict(color='blue')
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=history['Date'],
+            y=history['CA_Risk']*100,
+            name='CA Risk %',
+            line=dict(color='red'),
+            yaxis='y2'
+        ))
+        
+        fig.update_layout(
+            title=f'Student {student_id} Historical Trends',
+            yaxis=dict(title='Attendance Percentage'),
+            yaxis2=dict(
+                title='CA Risk Percentage',
+                overlaying='y',
+                side='right'
+            )
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("No historical data available for this student")
+
+def generate_geographic_map(df):
+    """Generate geographic visualization of risk"""
+    if 'Address' not in df.columns:
+        st.warning("Address data not available for geographic mapping")
+        return
+    
+    st.subheader("Geographic Risk Distribution")
+    
+    # Sample geocoding - in production you'd want to cache these results
+    geolocator = Nominatim(user_agent="ca_predictor")
+    
+    # Take a sample to avoid geocoding too many addresses
+    sample_df = df.sample(min(50, len(df)))
+    
+    locations = []
+    for idx, row in sample_df.iterrows():
+        try:
+            location = geolocator.geocode(row['Address'])
+            if location:
+                locations.append({
+                    'lat': location.latitude,
+                    'lon': location.longitude,
+                    'risk': row['CA_Risk'],
+                    'student': row.get('Student_ID', '')
+                })
+        except:
+            continue
+    
+    if locations:
+        # Create map centered on first location
+        m = folium.Map(location=[locations[0]['lat'], locations[0]['lon']], zoom_start=12)
+        
+        for loc in locations:
+            color = '#ff4b4b' if loc['risk'] > 0.7 else '#ffa500' if loc['risk'] > 0.3 else '#2ecc71'
+            folium.CircleMarker(
+                location=[loc['lat'], loc['lon']],
+                radius=5 + (loc['risk'] * 10),
+                color=color,
+                fill=True,
+                fill_color=color,
+                popup=f"Student: {loc['student']}<br>Risk: {loc['risk']:.2f}"
+            ).add_to(m)
+        
+        folium_static(m)
+    else:
+        st.warning("Could not geocode addresses")
+
+def what_if_analysis(student_data, changes):
+    """Perform what-if analysis based on proposed changes"""
+    modified_data = student_data.copy()
+    for feature, value in changes.items():
+        if feature in modified_data:
+            modified_data[feature] = value
+    
+    original_risk = predict_ca_risk(student_data, st.session_state.model)[0]
+    new_risk = predict_ca_risk(modified_data, st.session_state.model)[0]
+    
+    return original_risk, new_risk
+
+def intervention_cost_benefit(students_df):
+    """Analyze cost vs benefit of interventions"""
+    st.subheader("Intervention Cost-Benefit Analysis")
+    
+    # Calculate potential reductions
+    interventions = st.session_state.interventions
+    thresholds = st.session_state.risk_thresholds
+    
+    high_risk = students_df[students_df['CA_Risk'] >= thresholds['medium']]
+    num_high_risk = len(high_risk)
+    
+    results = []
+    for name, details in interventions.items():
+        cost_per_student = details['cost']
+        effectiveness = details['effectiveness']
+        
+        total_cost = cost_per_student * num_high_risk
+        potential_reduction = num_high_risk * effectiveness
+        cost_per_reduction = total_cost / potential_reduction if potential_reduction > 0 else float('inf')
+        
+        results.append({
+            'Intervention': name,
+            'Total Cost': total_cost,
+            'Potential Cases Prevented': round(potential_reduction),
+            'Cost per Case Prevented': round(cost_per_reduction),
+            'Effectiveness': effectiveness
+        })
+    
+    results_df = pd.DataFrame(results)
+    
+    # Show table
+    st.dataframe(results_df.sort_values('Cost per Case Prevented'))
+    
+    # Show scatter plot
+    fig = px.scatter(
+        results_df,
+        x='Potential Cases Prevented',
+        y='Total Cost',
+        size='Effectiveness',
+        color='Intervention',
+        hover_name='Intervention',
+        title='Intervention Cost vs Effectiveness'
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# Title and description
+st.title("🏫 Enhanced Chronic Absenteeism Early Warning System")
+st.markdown("Predict students at risk of chronic absenteeism (CA) using advanced analytics and machine learning.")
+
+# Sidebar navigation
+st.sidebar.title("Navigation")
+app_mode = st.sidebar.radio("Select Mode", 
+                          ["System Training", 
+                           "Batch Prediction", 
+                           "Single Student Check",
+                           "Advanced Analytics",
+                           "System Settings"])
+
 # System Training Section
 if app_mode == "System Training":
     st.header("🔧 System Training")
@@ -163,7 +351,7 @@ if app_mode == "System Training":
     with st.expander("📋 Data Requirements", expanded=True):
         st.markdown("""
         Your Excel file should include these columns:
-        - **Student_ID**: Unique identifier (optional)
+        - **Student_ID**: Unique identifier
         - **School**: School name/code
         - **Grade**: Grade level (1-12)
         - **Gender**: Male/Female/Other
@@ -172,6 +360,8 @@ if app_mode == "System Training":
         - **Meal_Code**: Free/Reduced/Paid (SES proxy)
         - **Academic_Performance**: Score (0-100)
         - **CA_Status**: Chronic Absenteeism status (YES/NO or 1/0)
+        - **Date**: (Optional) For time-series analysis
+        - **Address**: (Optional) For geographic mapping
         """)
     
     uploaded_file = st.file_uploader(
@@ -196,6 +386,15 @@ if app_mode == "System Training":
             if missing_cols:
                 st.error(f"Missing required columns: {', '.join(missing_cols)}")
             else:
+                # Store historical data for time-series analysis
+                if 'Date' in df.columns and 'Student_ID' in df.columns:
+                    df['Date'] = pd.to_datetime(df['Date'])
+                    st.session_state.historical_data = df
+                    
+                    # Build student history dictionary
+                    for student_id, group in df.groupby('Student_ID'):
+                        st.session_state.student_history[student_id] = group.sort_values('Date')
+                
                 # Show data preview
                 st.subheader("Data Preview")
                 st.dataframe(df.head())
@@ -203,7 +402,7 @@ if app_mode == "System Training":
                 # Train model
                 if st.button("Train Prediction Model", type="primary"):
                     with st.spinner("Training model... This may take a few minutes"):
-                        model, report = train_model(df)
+                        model, report, shap_data = train_model(df)
                         
                         if model is not None:
                             st.session_state.model = model
@@ -221,8 +420,8 @@ if app_mode == "System Training":
                             # Feature importance
                             st.subheader("Top Predictive Factors")
                             feature_importance = pd.DataFrame({
-                                'Feature': model.feature_names_in_,
-                                'Importance': model.feature_importances_
+                                'Feature': model.named_estimators_['xgb'].feature_names_in_,
+                                'Importance': model.named_estimators_['xgb'].feature_importances_
                             }).sort_values('Importance', ascending=False)
                             
                             fig = px.bar(
@@ -233,6 +432,11 @@ if app_mode == "System Training":
                                 title='Top 10 Most Important Features'
                             )
                             st.plotly_chart(fig)
+                            
+                            # SHAP summary plot
+                            if shap_data:
+                                explainer, shap_values, X_train = shap_data
+                                plot_shap_summary(explainer, shap_values, X_train)
                             
                             # Download model
                             with tempfile.NamedTemporaryFile(delete=False) as tmp:
@@ -300,7 +504,9 @@ elif app_mode == "Batch Prediction":
                                 current_df['CA_Risk'] = risks
                                 current_df['CA_Risk_Level'] = pd.cut(
                                     current_df['CA_Risk'],
-                                    bins=[0, 0.3, 0.7, 1],
+                                    bins=[0, st.session_state.risk_thresholds['low'], 
+                                          st.session_state.risk_thresholds['medium'], 
+                                          st.session_state.risk_thresholds['high']],
                                     labels=['Low', 'Medium', 'High']
                                 )
                                 
@@ -415,11 +621,12 @@ elif app_mode == "Single Student Check":
                     if st.session_state.citywide_mode and transferred and prev_ca == "Yes":
                         risk = min(risk * 1.4, 0.99)  # Increase risk by 40%
                     
-                    # Determine risk level
-                    if risk < 0.3:
+                    # Determine risk level based on current thresholds
+                    thresholds = st.session_state.risk_thresholds
+                    if risk < thresholds['low']:
                         risk_level = "Low"
                         risk_class = "risk-low"
-                    elif risk < 0.7:
+                    elif risk < thresholds['medium']:
                         risk_level = "Medium"
                         risk_class = "risk-medium"
                     else:
@@ -458,9 +665,9 @@ elif app_mode == "Single Student Check":
                         gauge={
                             'axis': {'range': [0, 100]},
                             'steps': [
-                                {'range': [0, 30], 'color': "lightgreen"},
-                                {'range': [30, 70], 'color': "orange"},
-                                {'range': [70, 100], 'color': "red"}],
+                                {'range': [0, thresholds['low']*100], 'color': "lightgreen"},
+                                {'range': [thresholds['low']*100, thresholds['medium']*100], 'color': "orange"},
+                                {'range': [thresholds['medium']*100, 100], 'color': "red"}],
                             'threshold': {
                                 'line': {'color': "black", 'width': 4},
                                 'thickness': 0.75,
@@ -470,30 +677,79 @@ elif app_mode == "Single Student Check":
                     ))
                     st.plotly_chart(fig, use_container_width=True)
                     
-                    # Key factors
-                    st.subheader("Key Risk Factors")
+                    # SHAP explanation for single prediction
+                    if hasattr(st.session_state.model, 'named_estimators_'):
+                        try:
+                            # Get the XGBoost model from the ensemble
+                            xgb_model = st.session_state.model.named_estimators_['xgb']
+                            explainer = shap.TreeExplainer(xgb_model)
+                            
+                            # Prepare the input data
+                            df_processed = preprocess_data(pd.DataFrame([input_data]), is_training=False)
+                            
+                            # Ensure columns match training data
+                            if hasattr(xgb_model, 'feature_names_in_'):
+                                missing_cols = set(xgb_model.feature_names_in_) - set(df_processed.columns)
+                                for col in missing_cols:
+                                    df_processed[col] = 0
+                                df_processed = df_processed[xgb_model.feature_names_in_]
+                            
+                            # Calculate SHAP values
+                            shap_values = explainer.shap_values(df_processed)
+                            
+                            # Plot force plot
+                            st.subheader("Risk Factor Breakdown")
+                            fig, ax = plt.subplots()
+                            shap.force_plot(
+                                explainer.expected_value,
+                                shap_values[0],
+                                df_processed.iloc[0],
+                                matplotlib=True,
+                                show=False
+                            )
+                            st.pyplot(fig)
+                            plt.clf()
+                        except Exception as e:
+                            st.warning(f"Could not generate SHAP explanation: {str(e)}")
                     
-                    # Simulate feature importance (would use SHAP values in production)
-                    factors = {
-                        'Attendance <90%': max(0, (0.9 - (attendance_pct/100))) * 0.4,
-                        'Low Grades': max(0, (70 - academic_performance)/70) * 0.3,
-                        'Free/Reduced Meals': 0.2 if meal_code in ['Free', 'Reduced'] else 0,
-                        'Grade Level': (grade/12) * 0.1  # Higher grades often have higher CA
-                    }
+                    # Show historical trends if available
+                    if student_id and student_id in st.session_state.student_history:
+                        st.subheader("Historical Trends")
+                        plot_student_history(student_id)
                     
-                    # Normalize to sum to risk
-                    factor_sum = sum(factors.values())
-                    if factor_sum > 0:
-                        factors = {k: (v/factor_sum)*risk for k, v in factors.items()}
+                    # What-if analysis
+                    st.subheader("What-If Analysis")
+                    st.markdown("See how changes might affect this student's risk:")
                     
-                    fig2 = px.bar(
-                        x=list(factors.values()),
-                        y=list(factors.keys()),
-                        orientation='h',
-                        title='Contributing Risk Factors',
-                        labels={'x': 'Contribution to Risk', 'y': 'Factor'}
-                    )
-                    st.plotly_chart(fig2, use_container_width=True)
+                    what_if_cols = st.columns(2)
+                    with what_if_cols[0]:
+                        new_attendance = st.slider(
+                            "Change attendance days",
+                            min_value=0,
+                            max_value=present_days + absent_days,
+                            value=present_days
+                        )
+                    with what_if_cols[1]:
+                        new_performance = st.slider(
+                            "Change academic performance",
+                            min_value=0,
+                            max_value=100,
+                            value=academic_performance
+                        )
+                    
+                    if st.button("Run Scenario Analysis"):
+                        changes = {
+                            'Present_Days': new_attendance,
+                            'Absent_Days': (present_days + absent_days) - new_attendance,
+                            'Academic_Performance': new_performance
+                        }
+                        original_risk, new_risk = what_if_analysis(input_data, changes)
+                        
+                        st.markdown(f"""
+                        - **Original Risk**: {original_risk:.1%}
+                        - **New Risk**: {new_risk:.1%}
+                        - **Change**: {(new_risk - original_risk):.1%} points
+                        """)
                     
                     # Recommendations
                     st.subheader("Recommended Actions")
@@ -526,12 +782,9 @@ elif app_mode == "Advanced Analytics":
     
     if st.session_state.model is None:
         st.warning("Please train a model first in the System Training section.")
+    elif st.session_state.current_df.empty:
+        st.warning("No prediction data available. Please run batch predictions first.")
     else:
-        # Load sample data or uploaded data
-        if 'current_df' not in st.session_state or st.session_state.current_df.empty:
-            st.warning("No prediction data available. Please run batch predictions first.")
-            st.stop()
-        
         df = st.session_state.current_df
         
         # Visualization options
@@ -541,7 +794,10 @@ elif app_mode == "Advanced Analytics":
                 "Risk Distribution by School",
                 "Attendance vs. Academic Performance",
                 "Risk Heatmap by Grade & SES",
-                "Temporal Attendance Trends"
+                "Temporal Attendance Trends",
+                "Cohort Analysis",
+                "Geographic Risk Mapping",
+                "Intervention Cost-Benefit"
             ]
         )
         
@@ -625,45 +881,172 @@ elif app_mode == "Advanced Analytics":
         elif viz_option == "Temporal Attendance Trends":
             st.subheader("Temporal Attendance Trends")
             
-            # Get current year
-            current_year = datetime.now().year
-            
-            # Simulate temporal data
-            dates = pd.date_range(
-                start=datetime(current_year, 1, 1),
-                end=datetime(current_year, 12, 31),
-                freq='W'
-            )
-            
-            # Simulate attendance trends
-            trend_data = pd.DataFrame({
-                'Date': dates,
-                'Attendance': np.sin(np.linspace(0, 10, len(dates))) * 0.1 + 0.8,
-                'CA_Risk': np.cos(np.linspace(0, 8, len(dates))) * 0.1 + 0.3
-            })
-            
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=trend_data['Date'],
-                y=trend_data['Attendance'],
-                name='Attendance Rate',
-                line=dict(color='blue')
-            ))
-            fig.add_trace(go.Scatter(
-                x=trend_data['Date'],
-                y=trend_data['CA_Risk'],
-                name='CA Risk',
-                yaxis='y2',
-                line=dict(color='red')
-            ))
-            
-            fig.update_layout(
-                title='Weekly Attendance and CA Risk Trends',
-                yaxis=dict(title='Attendance Rate'),
-                yaxis2=dict(
-                    title='CA Risk',
-                    overlaying='y',
-                    side='right'
+            if not st.session_state.historical_data.empty:
+                # Aggregate by date
+                trend_data = st.session_state.historical_data.groupby('Date').agg({
+                    'Attendance_Percentage': 'mean',
+                    'CA_Status': 'mean'
+                }).reset_index()
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=trend_data['Date'],
+                    y=trend_data['Attendance_Percentage'],
+                    name='Attendance Rate',
+                    line=dict(color='blue')
+                ))
+                fig.add_trace(go.Scatter(
+                    x=trend_data['Date'],
+                    y=trend_data['CA_Status']*100,
+                    name='CA Rate',
+                    yaxis='y2',
+                    line=dict(color='red')
+                ))
+                
+                fig.update_layout(
+                    title='Historical Attendance and CA Trends',
+                    yaxis=dict(title='Attendance Percentage'),
+                    yaxis2=dict(
+                        title='CA Rate Percentage',
+                        overlaying='y',
+                        side='right'
+                    )
                 )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("No historical temporal data available")
+        
+        elif viz_option == "Cohort Analysis":
+            st.subheader("Cohort Analysis")
+            
+            if not st.session_state.historical_data.empty:
+                # Select cohort year
+                years = st.session_state.historical_data['Date'].dt.year.unique()
+                selected_year = st.selectbox("Select Cohort Year", sorted(years))
+                
+                # Filter cohort
+                cohort = st.session_state.historical_data[
+                    st.session_state.historical_data['Date'].dt.year == selected_year
+                ]
+                
+                # Track students over time
+                cohort_students = cohort['Student_ID'].unique()
+                cohort_trends = st.session_state.historical_data[
+                    st.session_state.historical_data['Student_ID'].isin(cohort_students)
+                ]
+                
+                # Calculate monthly averages
+                cohort_trends['Month'] = cohort_trends['Date'].dt.to_period('M')
+                monthly_avg = cohort_trends.groupby('Month').agg({
+                    'Attendance_Percentage': 'mean',
+                    'CA_Status': 'mean'
+                }).reset_index()
+                monthly_avg['Month'] = monthly_avg['Month'].astype(str)
+                
+                # Plot
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=monthly_avg['Month'],
+                    y=monthly_avg['Attendance_Percentage'],
+                    name='Attendance Rate',
+                    line=dict(color='blue')
+                ))
+                fig.add_trace(go.Scatter(
+                    x=monthly_avg['Month'],
+                    y=monthly_avg['CA_Status']*100,
+                    name='CA Rate',
+                    yaxis='y2',
+                    line=dict(color='red')
+                ))
+                
+                fig.update_layout(
+                    title=f'Cohort {selected_year} Monthly Trends',
+                    yaxis=dict(title='Attendance Percentage'),
+                    yaxis2=dict(
+                        title='CA Rate Percentage',
+                        overlaying='y',
+                        side='right'
+                    )
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("No historical data available for cohort analysis")
+        
+        elif viz_option == "Geographic Risk Mapping":
+            generate_geographic_map(df)
+        
+        elif viz_option == "Intervention Cost-Benefit":
+            intervention_cost_benefit(df)
+
+# System Settings Section
+elif app_mode == "System Settings":
+    st.header("⚙️ System Settings")
+    
+    # Risk threshold adjustment
+    st.subheader("Risk Threshold Configuration")
+    st.markdown("Adjust the probability thresholds for risk levels:")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        low_thresh = st.slider(
+            "Low Risk Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.risk_thresholds['low'],
+            step=0.05
+        )
+    with col2:
+        medium_thresh = st.slider(
+            "Medium Risk Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.risk_thresholds['medium'],
+            step=0.05
+        )
+    with col3:
+        high_thresh = st.slider(
+            "High Risk Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.risk_thresholds['high'],
+            step=0.05,
+            disabled=True
+        )
+    
+    if low_thresh >= medium_thresh:
+        st.error("Low risk threshold must be less than medium threshold")
+    else:
+        st.session_state.risk_thresholds = {
+            'low': low_thresh,
+            'medium': medium_thresh,
+            'high': high_thresh
+        }
+        st.success("Thresholds updated successfully!")
+    
+    # Intervention configuration
+    st.subheader("Intervention Configuration")
+    st.markdown("Configure available interventions and their parameters:")
+    
+    interventions = st.session_state.interventions
+    for name, details in interventions.items():
+        st.markdown(f"**{name}**")
+        col1, col2 = st.columns(2)
+        with col1:
+            new_cost = st.number_input(
+                f"Cost per student ({name})",
+                min_value=0,
+                value=details['cost'],
+                key=f"cost_{name}"
             )
-            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            new_effect = st.slider(
+                f"Effectiveness ({name})",
+                min_value=0.0,
+                max_value=1.0,
+                value=details['effectiveness'],
+                step=0.05,
+                key=f"eff_{name}"
+            )
+        interventions[name] = {'cost': new_cost, 'effectiveness': new_effect}
+    
+    st.session_state.interventions = interventions
