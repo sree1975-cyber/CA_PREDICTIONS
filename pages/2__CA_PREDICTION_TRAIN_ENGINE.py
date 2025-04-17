@@ -717,21 +717,21 @@ elif app_mode == "Single Student Check":
                         st.subheader("Historical Trends")
                         plot_student_history(student_id)
                     
-                   # What-if analysis
-                   st.subheader("What-If Analysis")
-                   st.markdown("See how changes might affect this student's risk:")
+                    # What-if analysis
+                    st.subheader("What-If Analysis")
+                    st.markdown("See how changes might affect this student's risk:")
 
-                   # Create columns for sliders
-                   what_if_cols = st.columns(2)
-                   with what_if_cols[0]:
-                   new_attendance = st.slider(
-                   "Change attendance days",
-                   min_value=0,
-                   max_value=present_days + absent_days,
-                   value=present_days,
-                   key="attendance_slider"  # Added unique key
-                )
-                with what_if_cols[1]:
+                    # Create columns for sliders
+                    what_if_cols = st.columns(2)
+                    with what_if_cols[0]:
+                    new_attendance = st.slider(
+                    "Change attendance days",
+                    min_value=0,
+                    max_value=present_days + absent_days,
+                    value=present_days,
+                    key="attendance_slider"  # Added unique key
+                     )
+                    with what_if_cols[1]:
                     new_performance = st.slider(
                         "Change academic performance",
                         min_value=0,
@@ -740,16 +740,16 @@ elif app_mode == "Single Student Check":
                         key="performance_slider"  # Added unique key
                     )
                 
-                # The button MUST be at the same indentation level as the sliders
-                if st.button("Run Scenario Analysis", key="scenario_button"):
-                    changes = {
+                     # The button MUST be at the same indentation level as the sliders
+                     if st.button("Run Scenario Analysis", key="scenario_button"):
+                     changes = {
                         'Present_Days': new_attendance,
                         'Absent_Days': (present_days + absent_days) - new_attendance,
                         'Academic_Performance': new_performance
-                    }
-                    original_risk, new_risk = what_if_analysis(input_data, changes)
+                     }
+                     original_risk, new_risk = what_if_analysis(input_data, changes)
                     
-                    # Display results in a more organized way
+                     # Display results in a more organized way
                     st.markdown(f"""
                     ### Scenario Analysis Results:
                     - **Original Risk**: {original_risk:.1%}
