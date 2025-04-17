@@ -736,7 +736,7 @@ elif app_mode == "Single Student Check":
                             max_value=100,
                             value=academic_performance
                         )
-            if submitted:
+                 if submitted:
                     if st.button("Run Scenario Analysis"):
                         changes = {
                             'Present_Days': new_attendance,
