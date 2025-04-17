@@ -35,6 +35,10 @@ st.markdown("""
     .risk-low {color: #2ecc71; font-weight: bold;}
     .sidebar .sidebar-content {background-color: #f8f9fa;}
     .shap-watermark {display: none !important;}
+    div.stPlotlyChart {border: 1px solid #f0f2f6; border-radius: 0.5rem;}
+    div.stShap {width: 100% !important; margin: 0 auto !important;}
+    div.stShap svg {width: 100% !important; height: auto !important;}
+    .stSlider {padding: 0.5rem;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -60,19 +64,60 @@ if 'interventions' not in st.session_state:
         'Parent Meeting': {'cost': 200, 'effectiveness': 0.15},
         'After-school Program': {'cost': 400, 'effectiveness': 0.25}
     }
+if 'what_if_params' not in st.session_state:
+    st.session_state.what_if_params = {
+        'attendance': 0,
+        'performance': 0
+    }
 
 # Helper functions
+def generate_sample_data():
+    """Generate sample data for demonstration purposes"""
+    np.random.seed(42)
+    num_students = 500
+    schools = ['School A', 'School B', 'School C', 'School D']
+    grades = range(1, 13)
+    meal_codes = ['Free', 'Reduced', 'Paid']
+    
+    # Current data
+    current_df = pd.DataFrame({
+        'Student_ID': [f'STD{1000+i}' for i in range(num_students)],
+        'School': np.random.choice(schools, num_students),
+        'Grade': np.random.choice(grades, num_students),
+        'Gender': np.random.choice(['Male', 'Female'], num_students),
+        'Present_Days': np.random.randint(80, 180, num_students),
+        'Absent_Days': np.random.randint(0, 30, num_students),
+        'Meal_Code': np.random.choice(meal_codes, num_students),
+        'Academic_Performance': np.random.randint(50, 100, num_students),
+        'Address': np.random.choice([
+            "100 Main St, Anytown, USA",
+            "200 Oak Ave, Somewhere, USA",
+            "300 Pine Rd, Nowhere, USA"
+        ], num_students)
+    })
+    
+    # Historical data (3 years)
+    historical_data = pd.DataFrame()
+    for year in [2021, 2022, 2023]:
+        year_data = current_df.copy()
+        year_data['Date'] = pd.to_datetime(f'{year}-09-01') + pd.to_timedelta(
+            np.random.randint(0, 180, num_students), unit='d')
+        year_data['Present_Days'] = np.random.randint(80, 180, num_students)
+        year_data['Absent_Days'] = np.random.randint(0, 30, num_students)
+        year_data['CA_Status'] = np.random.choice([0, 1], num_students, p=[0.8, 0.2])
+        historical_data = pd.concat([historical_data, year_data])
+    
+    return current_df, historical_data
+
 def preprocess_data(df, is_training=True):
     """Preprocess the input data for training or prediction"""
     df = df.copy()
     
-    # Calculate attendance percentage if not present
     if 'Attendance_Percentage' not in df.columns:
         if 'Present_Days' in df.columns and 'Absent_Days' in df.columns:
             df['Attendance_Percentage'] = (df['Present_Days'] / 
                                          (df['Present_Days'] + df['Absent_Days'])) * 100
     
-    # Encode categorical variables
     cat_cols = ['Gender', 'Meal_Code', 'School']
     for col in cat_cols:
         if col in df.columns:
@@ -82,7 +127,6 @@ def preprocess_data(df, is_training=True):
                 st.session_state.label_encoders[col] = le
             else:
                 if col in st.session_state.label_encoders:
-                    # Handle unknown categories
                     df[col] = df[col].apply(lambda x: x if x in st.session_state.label_encoders[col].classes_ else 'Unknown')
                     df[col] = st.session_state.label_encoders[col].transform(df[col])
     
@@ -91,22 +135,18 @@ def preprocess_data(df, is_training=True):
 def train_model(df):
     """Train ensemble model on the provided data"""
     try:
-        # Preprocess data
         df_processed = preprocess_data(df)
         
-        # Convert CA_Status to binary (0/1)
         if df_processed['CA_Status'].dtype == 'object':
             df_processed['CA_Status'] = df_processed['CA_Status'].map({'NO_CA': 0, 'CA': 1}).astype(int)
         elif df_processed['CA_Status'].dtype == 'bool':
             df_processed['CA_Status'] = df_processed['CA_Status'].astype(int)
         
-        # Verify binary target
         unique_values = df_processed['CA_Status'].unique()
         if set(unique_values) != {0, 1}:
             st.error(f"Target variable must be binary (0/1). Found values: {unique_values}")
             return None, None, None
         
-        # Split data
         X = df_processed.drop(['CA_Status', 'Student_ID'], axis=1, errors='ignore')
         y = df_processed['CA_Status']
         
@@ -114,7 +154,6 @@ def train_model(df):
             X, y, test_size=0.2, random_state=42
         )
         
-        # Train XGBoost model
         xgb = XGBClassifier(
             n_estimators=150,
             max_depth=5,
@@ -124,14 +163,12 @@ def train_model(df):
             eval_metric='logloss'
         )
         
-        # Train Random Forest model
         rf = RandomForestClassifier(
             n_estimators=100,
             max_depth=5,
             random_state=42
         )
         
-        # Create ensemble model
         model = VotingClassifier(
             estimators=[('xgb', xgb), ('rf', rf)],
             voting='soft'
@@ -139,11 +176,9 @@ def train_model(df):
         
         model.fit(X_train, y_train)
         
-        # Evaluate
         y_pred = model.predict(X_test)
         report = classification_report(y_test, y_pred, output_dict=True)
         
-        # Generate SHAP values
         explainer = shap.TreeExplainer(model.named_estimators_['xgb'])
         shap_values = explainer.shap_values(X_train)
         
@@ -156,23 +191,18 @@ def predict_ca_risk(input_data, model):
     """Predict CA risk for input data"""
     try:
         if isinstance(input_data, dict):
-            # Single student prediction
             df = pd.DataFrame([input_data])
         else:
-            # Batch prediction
             df = input_data.copy()
         
-        # Preprocess
         df_processed = preprocess_data(df, is_training=False)
         
-        # Ensure columns match training data
         if hasattr(model, 'feature_names_in_'):
             missing_cols = set(model.feature_names_in_) - set(df_processed.columns)
             for col in missing_cols:
                 df_processed[col] = 0
             df_processed = df_processed[model.feature_names_in_]
         
-        # Predict
         if isinstance(model, (XGBClassifier, VotingClassifier)):
             risk = model.predict_proba(df_processed)[:, 1]
         else:
@@ -186,9 +216,10 @@ def predict_ca_risk(input_data, model):
 def plot_shap_summary(explainer, shap_values, features):
     """Create SHAP summary plot"""
     st.subheader("SHAP Feature Importance")
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(10, 6))
     shap.summary_plot(shap_values, features, plot_type="bar", show=False)
-    st.pyplot(fig)
+    plt.tight_layout()
+    st.pyplot(fig, use_container_width=True)
     plt.clf()
 
 def plot_student_history(student_id):
@@ -234,10 +265,12 @@ def generate_geographic_map(df):
     
     st.subheader("Geographic Risk Distribution")
     
-    # Sample geocoding - in production you'd want to cache these results
-    geolocator = Nominatim(user_agent="ca_predictor")
+    # Use sample data if no real addresses exist
+    if df['Address'].isnull().all():
+        sample_df, _ = generate_sample_data()
+        df['Address'] = sample_df['Address'].sample(len(df)).values
     
-    # Take a sample to avoid geocoding too many addresses
+    geolocator = Nominatim(user_agent="ca_predictor")
     sample_df = df.sample(min(50, len(df)))
     
     locations = []
@@ -255,7 +288,6 @@ def generate_geographic_map(df):
             continue
     
     if locations:
-        # Create map centered on first location
         m = folium.Map(location=[locations[0]['lat'], locations[0]['lon']], zoom_start=12)
         
         for loc in locations:
@@ -271,7 +303,14 @@ def generate_geographic_map(df):
         
         folium_static(m)
     else:
-        st.warning("Could not geocode addresses")
+        st.warning("Could not geocode addresses. Using sample locations.")
+        # Fallback to static sample locations
+        m = folium.Map(location=[37.7749, -122.4194], zoom_start=12)
+        folium.Marker(
+            location=[37.7749, -122.4194],
+            popup="Sample Location 1"
+        ).add_to(m)
+        folium_static(m)
 
 def what_if_analysis(student_data, changes):
     """Perform what-if analysis based on proposed changes"""
@@ -289,7 +328,6 @@ def intervention_cost_benefit(students_df):
     """Analyze cost vs benefit of interventions"""
     st.subheader("Intervention Cost-Benefit Analysis")
     
-    # Calculate potential reductions
     interventions = st.session_state.interventions
     thresholds = st.session_state.risk_thresholds
     
@@ -315,10 +353,8 @@ def intervention_cost_benefit(students_df):
     
     results_df = pd.DataFrame(results)
     
-    # Show table
     st.dataframe(results_df.sort_values('Cost per Case Prevented'))
     
-    # Show scatter plot
     fig = px.scatter(
         results_df,
         x='Potential Cases Prevented',
@@ -372,13 +408,11 @@ if app_mode == "System Training":
     
     if uploaded_file:
         try:
-            # Read file
             if uploaded_file.name.endswith('.xlsx'):
                 df = pd.read_excel(uploaded_file)
             else:
                 df = pd.read_csv(uploaded_file)
             
-            # Validate columns
             required_cols = {'Grade', 'Gender', 'Present_Days', 'Absent_Days', 
                            'Meal_Code', 'Academic_Performance', 'CA_Status'}
             missing_cols = required_cols - set(df.columns)
@@ -386,20 +420,16 @@ if app_mode == "System Training":
             if missing_cols:
                 st.error(f"Missing required columns: {', '.join(missing_cols)}")
             else:
-                # Store historical data for time-series analysis
                 if 'Date' in df.columns and 'Student_ID' in df.columns:
                     df['Date'] = pd.to_datetime(df['Date'])
                     st.session_state.historical_data = df
                     
-                    # Build student history dictionary
                     for student_id, group in df.groupby('Student_ID'):
                         st.session_state.student_history[student_id] = group.sort_values('Date')
                 
-                # Show data preview
                 st.subheader("Data Preview")
                 st.dataframe(df.head())
                 
-                # Train model
                 if st.button("Train Prediction Model", type="primary"):
                     with st.spinner("Training model... This may take a few minutes"):
                         model, report, shap_data = train_model(df)
@@ -408,7 +438,6 @@ if app_mode == "System Training":
                             st.session_state.model = model
                             st.success("Model trained successfully!")
                             
-                            # Show performance metrics
                             st.subheader("Model Performance")
                             st.json({
                                 "Accuracy": report['accuracy'],
@@ -417,8 +446,6 @@ if app_mode == "System Training":
                                 "F1-Score (CA)": report['1']['f1-score']
                             })
                             
-                            # Feature importance
-                            st.subheader("Top Predictive Factors")
                             feature_importance = pd.DataFrame({
                                 'Feature': model.named_estimators_['xgb'].feature_names_in_,
                                 'Importance': model.named_estimators_['xgb'].feature_importances_
@@ -433,12 +460,10 @@ if app_mode == "System Training":
                             )
                             st.plotly_chart(fig)
                             
-                            # SHAP summary plot
                             if shap_data:
                                 explainer, shap_values, X_train = shap_data
                                 plot_shap_summary(explainer, shap_values, X_train)
                             
-                            # Download model
                             with tempfile.NamedTemporaryFile(delete=False) as tmp:
                                 joblib.dump(model, tmp.name)
                                 with open(tmp.name, 'rb') as f:
@@ -456,7 +481,6 @@ elif app_mode == "Batch Prediction":
     if st.session_state.model is None:
         st.warning("Please train a model first in the System Training section.")
     else:
-        # Citywide mode toggle
         st.session_state.citywide_mode = st.checkbox(
             "Enable Citywide Mode (track students across schools)",
             value=st.session_state.citywide_mode
@@ -470,13 +494,11 @@ elif app_mode == "Batch Prediction":
         
         if uploaded_file:
             try:
-                # Read file
                 if uploaded_file.name.endswith('.xlsx'):
                     current_df = pd.read_excel(uploaded_file)
                 else:
                     current_df = pd.read_csv(uploaded_file)
                 
-                # Validate columns
                 required_cols = {'Student_ID', 'Grade', 'Gender', 'Present_Days', 
                                'Absent_Days', 'Meal_Code', 'Academic_Performance'}
                 missing_cols = required_cols - set(current_df.columns)
@@ -484,20 +506,16 @@ elif app_mode == "Batch Prediction":
                 if missing_cols:
                     st.error(f"Missing required columns: {', '.join(missing_cols)}")
                 else:
-                    # Show data preview
                     st.subheader("Current Data Preview")
                     st.dataframe(current_df.head())
                     
-                    # Predict
                     if st.button("Predict CA Risks", type="primary"):
                         with st.spinner("Predicting risks..."):
-                            # Calculate attendance percentage
                             current_df['Attendance_Percentage'] = (
                                 current_df['Present_Days'] / 
                                 (current_df['Present_Days'] + current_df['Absent_Days'])
                             ) * 100
                             
-                            # Predict
                             risks = predict_ca_risk(current_df, st.session_state.model)
                             
                             if risks is not None:
@@ -510,13 +528,10 @@ elif app_mode == "Batch Prediction":
                                     labels=['Low', 'Medium', 'High']
                                 )
                                 
-                                # Store for analytics
                                 st.session_state.current_df = current_df
                                 
-                                # Show results
                                 st.subheader("Prediction Results")
                                 
-                                # Risk distribution
                                 col1, col2, col3 = st.columns(3)
                                 with col1:
                                     low_count = (current_df['CA_Risk_Level'] == 'Low').sum()
@@ -528,7 +543,6 @@ elif app_mode == "Batch Prediction":
                                     high_count = (current_df['CA_Risk_Level'] == 'High').sum()
                                     st.metric("High Risk", high_count)
                                 
-                                # Risk distribution chart
                                 fig1 = px.pie(
                                     current_df,
                                     names='CA_Risk_Level',
@@ -542,7 +556,6 @@ elif app_mode == "Batch Prediction":
                                 )
                                 st.plotly_chart(fig1, use_container_width=True)
                                 
-                                # Risk by grade
                                 fig2 = px.box(
                                     current_df,
                                     x='Grade',
@@ -552,7 +565,6 @@ elif app_mode == "Batch Prediction":
                                 )
                                 st.plotly_chart(fig2, use_container_width=True)
                                 
-                                # Download results
                                 csv = current_df.to_csv(index=False)
                                 st.download_button(
                                     "Download Predictions",
@@ -571,219 +583,208 @@ elif app_mode == "Single Student Check":
     if st.session_state.model is None:
         st.warning("Please train a model first in the System Training section.")
     else:
-        with st.form("single_student_form"):
+        # Input form
+        with st.form(key='student_input_form'):
             st.subheader("Student Information")
             
             col1, col2 = st.columns(2)
             with col1:
-                student_id = st.text_input("Student ID (Optional)")
-                grade = st.selectbox("Grade", range(1, 13), index=5)
-                gender = st.selectbox("Gender", ["Male", "Female", "Other", "Unknown"])
-                meal_code = st.selectbox("Meal Code", ["Free", "Reduced", "Paid", "Unknown"])
+                student_id = st.text_input("Student ID (Optional)", key="student_id")
+                grade = st.selectbox("Grade", range(1, 13), index=5, key="grade")
+                gender = st.selectbox("Gender", ["Male", "Female", "Other", "Unknown"], key="gender")
+                meal_code = st.selectbox("Meal Code", ["Free", "Reduced", "Paid", "Unknown"], key="meal_code")
             
             with col2:
-                present_days = st.number_input("Present Days", min_value=0, max_value=365, value=45)
-                absent_days = st.number_input("Absent Days", min_value=0, max_value=365, value=10)
+                present_days = st.number_input("Present Days", min_value=0, max_value=365, value=45, key="present_days")
+                absent_days = st.number_input("Absent Days", min_value=0, max_value=365, value=10, key="absent_days")
                 academic_performance = st.number_input("Academic Performance (0-100)", 
-                                                    min_value=0, max_value=100, value=75)
+                                                    min_value=0, max_value=100, value=75, key="academic_performance")
                 
-                # Transfer student options
                 if st.session_state.citywide_mode:
-                    transferred = st.checkbox("Transferred student?")
+                    transferred = st.checkbox("Transferred student?", key="transferred")
                     if transferred:
                         prev_ca = st.selectbox("Previous school CA status", 
-                                             ["Unknown", "Yes", "No"])
+                                             ["Unknown", "Yes", "No"], key="prev_ca")
             
             submitted = st.form_submit_button("Check Risk", type="primary")
+        
+        # Results display (outside the form)
+        if submitted:
+            input_data = {
+                'Student_ID': student_id,
+                'Grade': grade,
+                'Gender': gender,
+                'Present_Days': present_days,
+                'Absent_Days': absent_days,
+                'Meal_Code': meal_code,
+                'Academic_Performance': academic_performance
+            }
             
-            if submitted:
-                # Prepare input data
-                input_data = {
-                    'Student_ID': student_id,
-                    'Grade': grade,
-                    'Gender': gender,
-                    'Present_Days': present_days,
-                    'Absent_Days': absent_days,
-                    'Meal_Code': meal_code,
-                    'Academic_Performance': academic_performance
-                }
+            attendance_pct = (present_days / (present_days + absent_days)) * 100
+            risk = predict_ca_risk(input_data, st.session_state.model)
+            
+            if risk is not None:
+                risk = float(risk[0])
                 
-                # Calculate attendance
-                attendance_pct = (present_days / (present_days + absent_days)) * 100
+                if st.session_state.citywide_mode and transferred and prev_ca == "Yes":
+                    risk = min(risk * 1.4, 0.99)
                 
-                # Predict
-                risk = predict_ca_risk(input_data, st.session_state.model)
+                thresholds = st.session_state.risk_thresholds
+                if risk < thresholds['low']:
+                    risk_level = "Low"
+                    risk_class = "risk-low"
+                elif risk < thresholds['medium']:
+                    risk_level = "Medium"
+                    risk_class = "risk-medium"
+                else:
+                    risk_level = "High"
+                    risk_class = "risk-high"
                 
-                if risk is not None:
-                    risk = float(risk[0])
-                    
-                    # Adjust for transfer history if applicable
-                    if st.session_state.citywide_mode and transferred and prev_ca == "Yes":
-                        risk = min(risk * 1.4, 0.99)  # Increase risk by 40%
-                    
-                    # Determine risk level based on current thresholds
-                    thresholds = st.session_state.risk_thresholds
-                    if risk < thresholds['low']:
-                        risk_level = "Low"
-                        risk_class = "risk-low"
-                    elif risk < thresholds['medium']:
-                        risk_level = "Medium"
-                        risk_class = "risk-medium"
-                    else:
-                        risk_level = "High"
-                        risk_class = "risk-high"
-                    
-                    # Display results
-                    st.subheader("Prediction Results")
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.markdown(f"""
-                        <div class="stMetric">
-                            <h3>CA Risk Level</h3>
-                            <p class="{risk_class}" style="font-size: 2rem;">{risk_level}</p>
-                            <p>Probability: {risk:.1%}</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    with col2:
-                        st.markdown(f"""
-                        <div class="stMetric">
-                            <h3>Attendance</h3>
-                            <p style="font-size: 2rem;">{attendance_pct:.1f}%</p>
-                            <p>{present_days} present / {absent_days} absent days</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    # Risk gauge chart
-                    fig = go.Figure(go.Indicator(
-                        mode="gauge+number",
-                        value=risk * 100,
-                        number={'suffix': "%"},
-                        domain={'x': [0, 1], 'y': [0, 1]},
-                        title={'text': "CA Risk Probability"},
-                        gauge={
-                            'axis': {'range': [0, 100]},
-                            'steps': [
-                                {'range': [0, thresholds['low']*100], 'color': "lightgreen"},
-                                {'range': [thresholds['low']*100, thresholds['medium']*100], 'color': "orange"},
-                                {'range': [thresholds['medium']*100, 100], 'color': "red"}],
-                            'threshold': {
-                                'line': {'color': "black", 'width': 4},
-                                'thickness': 0.75,
-                                'value': risk * 100
-                            }
+                st.subheader("Prediction Results")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown(f"""
+                    <div class="stMetric">
+                        <h3>CA Risk Level</h3>
+                        <p class="{risk_class}" style="font-size: 2rem;">{risk_level}</p>
+                        <p>Probability: {risk:.1%}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    st.markdown(f"""
+                    <div class="stMetric">
+                        <h3>Attendance</h3>
+                        <p style="font-size: 2rem;">{attendance_pct:.1f}%</p>
+                        <p>{present_days} present / {absent_days} absent days</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                fig = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=risk * 100,
+                    number={'suffix': "%"},
+                    domain={'x': [0, 1], 'y': [0, 1]},
+                    title={'text': "CA Risk Probability"},
+                    gauge={
+                        'axis': {'range': [0, 100]},
+                        'steps': [
+                            {'range': [0, thresholds['low']*100], 'color': "lightgreen"},
+                            {'range': [thresholds['low']*100, thresholds['medium']*100], 'color': "orange"},
+                            {'range': [thresholds['medium']*100, 100], 'color': "red"}],
+                        'threshold': {
+                            'line': {'color': "black", 'width': 4},
+                            'thickness': 0.75,
+                            'value': risk * 100
                         }
-                    ))
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # SHAP explanation for single prediction
-                    if hasattr(st.session_state.model, 'named_estimators_'):
-                        try:
-                            # Get the XGBoost model from the ensemble
-                            xgb_model = st.session_state.model.named_estimators_['xgb']
-                            explainer = shap.TreeExplainer(xgb_model)
-                            
-                            # Prepare the input data
-                            df_processed = preprocess_data(pd.DataFrame([input_data]), is_training=False)
-                            
-                            # Ensure columns match training data
-                            if hasattr(xgb_model, 'feature_names_in_'):
-                                missing_cols = set(xgb_model.feature_names_in_) - set(df_processed.columns)
-                                for col in missing_cols:
-                                    df_processed[col] = 0
-                                df_processed = df_processed[xgb_model.feature_names_in_]
-                            
-                            # Calculate SHAP values
-                            shap_values = explainer.shap_values(df_processed)
-                            
-                            # Plot force plot
-                            st.subheader("Risk Factor Breakdown")
-                            fig, ax = plt.subplots()
-                            shap.force_plot(
-                                explainer.expected_value,
-                                shap_values[0],
-                                df_processed.iloc[0],
-                                matplotlib=True,
-                                show=False
-                            )
-                            st.pyplot(fig)
-                            plt.clf()
-                        except Exception as e:
-                            st.warning(f"Could not generate SHAP explanation: {str(e)}")
-                    
-                    # Show historical trends if available
-                    if student_id and student_id in st.session_state.student_history:
-                        st.subheader("Historical Trends")
-                        plot_student_history(student_id)
-                    
-                    # In your form handling section:
-                    with st.form(key='student_analysis_form'):
-                        # Your existing form elements...
-                        submitted = st.form_submit_button("Analyze Student")
-                    
-                    if submitted:
-                        # Your existing prediction results display...
-                    
-                        # What-if Analysis Section - FINAL WORKING VERSION
-                        st.subheader("What-If Analysis")
-                        st.markdown("See how changes might affect this student's risk:")
+                    }
+                ))
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # SHAP explanation
+                if hasattr(st.session_state.model, 'named_estimators_'):
+                    try:
+                        xgb_model = st.session_state.model.named_estimators_['xgb']
+                        explainer = shap.TreeExplainer(xgb_model)
                         
-                        # Initialize session state for what-if parameters
-                        if 'what_if' not in state:
-                            state.what_if = {
-                                'attendance': present_days,
-                                'performance': academic_performance
-                            }
-                    
-                        # Create columns for sliders
-                        col1, col2 = st.columns(2)
+                        df_processed = preprocess_data(pd.DataFrame([input_data]), is_training=False)
                         
-                        with col1:
-                            state.what_if['attendance'] = st.slider(
-                                "Change attendance days",
-                                min_value=0,
-                                max_value=present_days + absent_days,
-                                value=state.what_if['attendance'],
-                                key="what_if_attendance_slider"
-                            )
+                        if hasattr(xgb_model, 'feature_names_in_'):
+                            missing_cols = set(xgb_model.feature_names_in_) - set(df_processed.columns)
+                            for col in missing_cols:
+                                df_processed[col] = 0
+                            df_processed = df_processed[xgb_model.feature_names_in_]
                         
-                        with col2:
-                            state.what_if['performance'] = st.slider(
-                                "Change academic performance",
-                                min_value=0,
-                                max_value=100,
-                                value=state.what_if['performance'],
-                                key="what_if_performance_slider"
-                            )
+                        shap_values = explainer.shap_values(df_processed)
                         
-                        # Scenario analysis button and logic
-                        scenario_clicked = st.button(
-                            "Run Scenario Analysis", 
-                            key="what_if_scenario_button"
+                        st.subheader("Risk Factor Breakdown")
+                        fig, ax = plt.subplots(figsize=(10, 4))
+                        shap.force_plot(
+                            explainer.expected_value,
+                            shap_values[0],
+                            df_processed.iloc[0],
+                            matplotlib=True,
+                            show=False
                         )
-                        
-                        if scenario_clicked:
-                            with st.spinner("Analyzing scenario..."):
-                                changes = {
-                                    'Present_Days': state.what_if['attendance'],
-                                    'Absent_Days': (present_days + absent_days) - state.what_if['attendance'],
-                                    'Academic_Performance': state.what_if['performance']
-                                }
-                                
-                                try:
-                                    original_risk, new_risk = what_if_analysis(input_data, changes)
-                                    
-                                    st.success("Scenario Analysis Complete")
-                                    st.markdown(f"""
-                                    ### Results:
-                                    - **Original Risk**: {original_risk:.1%}
-                                    - **New Risk**: {new_risk:.1%}
-                                    - **Change**: {(new_risk - original_risk):+.1%} points
-                                    """)
-                                    
-                                except Exception as e:
-                                    st.error(f"Scenario analysis failed: {str(e)}")
+                        st.pyplot(fig, bbox_inches='tight')
+                        plt.clf()
+                    except Exception as e:
+                        st.warning(f"Could not generate SHAP explanation: {str(e)}")
+                
+                # Historical trends
+                if student_id and student_id in st.session_state.student_history:
+                    st.subheader("Historical Trends")
+                    plot_student_history(student_id)
+                
+                # What-if analysis section (outside form)
+                st.subheader("What-If Analysis")
+                st.markdown("See how changes might affect this student's risk:")
+                
+                # Initialize what-if parameters
+                if 'what_if_params' not in st.session_state:
+                    st.session_state.what_if_params = {
+                        'attendance': present_days,
+                        'performance': academic_performance
+                    }
+                
+                what_if_cols = st.columns(2)
+                with what_if_cols[0]:
+                    st.session_state.what_if_params['attendance'] = st.slider(
+                        "Change attendance days",
+                        min_value=0,
+                        max_value=present_days + absent_days,
+                        value=st.session_state.what_if_params['attendance'],
+                        key="what_if_attendance"
+                    )
+                with what_if_cols[1]:
+                    st.session_state.what_if_params['performance'] = st.slider(
+                        "Change academic performance",
+                        min_value=0,
+                        max_value=100,
+                        value=st.session_state.what_if_params['performance'],
+                        key="what_if_performance"
+                    )
+                
+                # Scenario analysis button
+                if st.button("Run Scenario Analysis", key="scenario_button"):
+                    changes = {
+                        'Present_Days': st.session_state.what_if_params['attendance'],
+                        'Absent_Days': (present_days + absent_days) - st.session_state.what_if_params['attendance'],
+                        'Academic_Performance': st.session_state.what_if_params['performance']
+                    }
+                    original_risk, new_risk = what_if_analysis(input_data, changes)
+                    
+                    st.markdown(f"""
+                    ### Scenario Results:
+                    - **Original Risk**: {original_risk:.1%}
+                    - **New Risk**: {new_risk:.1%}
+                    - **Change**: {(new_risk - original_risk):+.1%} points
+                    """)
+                
+                # Recommendations
+                st.subheader("Recommended Actions")
+                if risk_level == "High":
+                    st.markdown("""
+                    - **Immediate counselor meeting**
+                    - **Parent/guardian notification**
+                    - **Attendance improvement plan**
+                    - **Academic support services**
+                    - **Weekly monitoring**
+                    """)
+                elif risk_level == "Medium":
+                    st.markdown("""
+                    - **Monthly check-ins**
+                    - **Mentor assignment**
+                    - **After-school program referral**
+                    - **Quarterly parent meetings**
+                    """)
+                else:
+                    st.markdown("""
+                    - **Continue regular monitoring**
+                    - **Positive reinforcement**
+                    - **Encourage extracurriculars**
+                    """)
 
 # Advanced Analytics Section
 elif app_mode == "Advanced Analytics":
@@ -794,10 +795,14 @@ elif app_mode == "Advanced Analytics":
         st.warning("Please train a model first in the System Training section.")
     elif st.session_state.current_df.empty:
         st.warning("No prediction data available. Please run batch predictions first.")
+        if st.button("Generate Sample Data for Demo"):
+            current_df, historical_data = generate_sample_data()
+            st.session_state.current_df = current_df
+            st.session_state.historical_data = historical_data
+            st.success("Sample data generated! Refresh the page to view analytics.")
     else:
         df = st.session_state.current_df
         
-        # Visualization options
         viz_option = st.selectbox(
             "Select Visualization",
             [
@@ -817,7 +822,6 @@ elif app_mode == "Advanced Analytics":
             if 'School' not in df.columns:
                 st.warning("School data not available in predictions.")
             else:
-                # Group by school
                 school_stats = df.groupby('School').agg({
                     'CA_Risk': 'mean',
                     'Student_ID': 'count'
@@ -862,7 +866,6 @@ elif app_mode == "Advanced Analytics":
             if 'Meal_Code' not in df.columns:
                 st.warning("Meal Code (SES) data not available in predictions.")
             else:
-                # Decode Meal_Code if encoded
                 try:
                     if 'Meal_Code' in st.session_state.label_encoders:
                         le = st.session_state.label_encoders['Meal_Code']
@@ -870,7 +873,6 @@ elif app_mode == "Advanced Analytics":
                 except:
                     pass
                 
-                # Pivot table for heatmap
                 heatmap_data = df.pivot_table(
                     values='CA_Risk',
                     index='Grade',
@@ -892,7 +894,6 @@ elif app_mode == "Advanced Analytics":
             st.subheader("Temporal Attendance Trends")
             
             if not st.session_state.historical_data.empty:
-                # Aggregate by date
                 trend_data = st.session_state.historical_data.groupby('Date').agg({
                     'Attendance_Percentage': 'mean',
                     'CA_Status': 'mean'
@@ -930,22 +931,18 @@ elif app_mode == "Advanced Analytics":
             st.subheader("Cohort Analysis")
             
             if not st.session_state.historical_data.empty:
-                # Select cohort year
                 years = st.session_state.historical_data['Date'].dt.year.unique()
                 selected_year = st.selectbox("Select Cohort Year", sorted(years))
                 
-                # Filter cohort
                 cohort = st.session_state.historical_data[
                     st.session_state.historical_data['Date'].dt.year == selected_year
                 ]
                 
-                # Track students over time
                 cohort_students = cohort['Student_ID'].unique()
                 cohort_trends = st.session_state.historical_data[
                     st.session_state.historical_data['Student_ID'].isin(cohort_students)
                 ]
                 
-                # Calculate monthly averages
                 cohort_trends['Month'] = cohort_trends['Date'].dt.to_period('M')
                 monthly_avg = cohort_trends.groupby('Month').agg({
                     'Attendance_Percentage': 'mean',
@@ -953,7 +950,6 @@ elif app_mode == "Advanced Analytics":
                 }).reset_index()
                 monthly_avg['Month'] = monthly_avg['Month'].astype(str)
                 
-                # Plot
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=monthly_avg['Month'],
@@ -992,7 +988,6 @@ elif app_mode == "Advanced Analytics":
 elif app_mode == "System Settings":
     st.header("⚙️ System Settings")
     
-    # Risk threshold adjustment
     st.subheader("Risk Threshold Configuration")
     st.markdown("Adjust the probability thresholds for risk levels:")
     
@@ -1003,7 +998,8 @@ elif app_mode == "System Settings":
             min_value=0.0,
             max_value=1.0,
             value=st.session_state.risk_thresholds['low'],
-            step=0.05
+            step=0.05,
+            key="low_thresh"
         )
     with col2:
         medium_thresh = st.slider(
@@ -1011,7 +1007,8 @@ elif app_mode == "System Settings":
             min_value=0.0,
             max_value=1.0,
             value=st.session_state.risk_thresholds['medium'],
-            step=0.05
+            step=0.05,
+            key="medium_thresh"
         )
     with col3:
         high_thresh = st.slider(
@@ -1020,7 +1017,8 @@ elif app_mode == "System Settings":
             max_value=1.0,
             value=st.session_state.risk_thresholds['high'],
             step=0.05,
-            disabled=True
+            disabled=True,
+            key="high_thresh"
         )
     
     if low_thresh >= medium_thresh:
@@ -1033,7 +1031,6 @@ elif app_mode == "System Settings":
         }
         st.success("Thresholds updated successfully!")
     
-    # Intervention configuration
     st.subheader("Intervention Configuration")
     st.markdown("Configure available interventions and their parameters:")
     
