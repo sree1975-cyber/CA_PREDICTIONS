@@ -35,10 +35,6 @@ st.markdown("""
     .risk-low {color: #2ecc71; font-weight: bold;}
     .sidebar .sidebar-content {background-color: #f8f9fa;}
     .shap-watermark {display: none !important;}
-    div.stPlotlyChart {border: 1px solid #f0f2f6; border-radius: 0.5rem;}
-    div.stShap {width: 100% !important; margin: 0 auto !important;}
-    div.stShap svg {width: 100% !important; height: auto !important;}
-    .stSlider {padding: 0.5rem;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -64,60 +60,19 @@ if 'interventions' not in st.session_state:
         'Parent Meeting': {'cost': 200, 'effectiveness': 0.15},
         'After-school Program': {'cost': 400, 'effectiveness': 0.25}
     }
-if 'what_if_params' not in st.session_state:
-    st.session_state.what_if_params = {
-        'attendance': 0,
-        'performance': 0
-    }
 
 # Helper functions
-def generate_sample_data():
-    """Generate sample data for demonstration purposes"""
-    np.random.seed(42)
-    num_students = 500
-    schools = ['School A', 'School B', 'School C', 'School D']
-    grades = range(1, 13)
-    meal_codes = ['Free', 'Reduced', 'Paid']
-    
-    # Current data
-    current_df = pd.DataFrame({
-        'Student_ID': [f'STD{1000+i}' for i in range(num_students)],
-        'School': np.random.choice(schools, num_students),
-        'Grade': np.random.choice(grades, num_students),
-        'Gender': np.random.choice(['Male', 'Female'], num_students),
-        'Present_Days': np.random.randint(80, 180, num_students),
-        'Absent_Days': np.random.randint(0, 30, num_students),
-        'Meal_Code': np.random.choice(meal_codes, num_students),
-        'Academic_Performance': np.random.randint(50, 100, num_students),
-        'Address': np.random.choice([
-            "100 Main St, Anytown, USA",
-            "200 Oak Ave, Somewhere, USA",
-            "300 Pine Rd, Nowhere, USA"
-        ], num_students)
-    })
-    
-    # Historical data (3 years)
-    historical_data = pd.DataFrame()
-    for year in [2021, 2022, 2023]:
-        year_data = current_df.copy()
-        year_data['Date'] = pd.to_datetime(f'{year}-09-01') + pd.to_timedelta(
-            np.random.randint(0, 180, num_students), unit='d')
-        year_data['Present_Days'] = np.random.randint(80, 180, num_students)
-        year_data['Absent_Days'] = np.random.randint(0, 30, num_students)
-        year_data['CA_Status'] = np.random.choice([0, 1], num_students, p=[0.8, 0.2])
-        historical_data = pd.concat([historical_data, year_data])
-    
-    return current_df, historical_data
-
 def preprocess_data(df, is_training=True):
     """Preprocess the input data for training or prediction"""
     df = df.copy()
     
+    # Calculate attendance percentage if not present
     if 'Attendance_Percentage' not in df.columns:
         if 'Present_Days' in df.columns and 'Absent_Days' in df.columns:
             df['Attendance_Percentage'] = (df['Present_Days'] / 
                                          (df['Present_Days'] + df['Absent_Days'])) * 100
     
+    # Encode categorical variables
     cat_cols = ['Gender', 'Meal_Code', 'School']
     for col in cat_cols:
         if col in df.columns:
@@ -127,6 +82,7 @@ def preprocess_data(df, is_training=True):
                 st.session_state.label_encoders[col] = le
             else:
                 if col in st.session_state.label_encoders:
+                    # Handle unknown categories
                     df[col] = df[col].apply(lambda x: x if x in st.session_state.label_encoders[col].classes_ else 'Unknown')
                     df[col] = st.session_state.label_encoders[col].transform(df[col])
     
@@ -135,18 +91,22 @@ def preprocess_data(df, is_training=True):
 def train_model(df):
     """Train ensemble model on the provided data"""
     try:
+        # Preprocess data
         df_processed = preprocess_data(df)
         
+        # Convert CA_Status to binary (0/1)
         if df_processed['CA_Status'].dtype == 'object':
             df_processed['CA_Status'] = df_processed['CA_Status'].map({'NO_CA': 0, 'CA': 1}).astype(int)
         elif df_processed['CA_Status'].dtype == 'bool':
             df_processed['CA_Status'] = df_processed['CA_Status'].astype(int)
         
+        # Verify binary target
         unique_values = df_processed['CA_Status'].unique()
         if set(unique_values) != {0, 1}:
             st.error(f"Target variable must be binary (0/1). Found values: {unique_values}")
             return None, None, None
         
+        # Split data
         X = df_processed.drop(['CA_Status', 'Student_ID'], axis=1, errors='ignore')
         y = df_processed['CA_Status']
         
@@ -154,6 +114,7 @@ def train_model(df):
             X, y, test_size=0.2, random_state=42
         )
         
+        # Train XGBoost model
         xgb = XGBClassifier(
             n_estimators=150,
             max_depth=5,
@@ -163,12 +124,14 @@ def train_model(df):
             eval_metric='logloss'
         )
         
+        # Train Random Forest model
         rf = RandomForestClassifier(
             n_estimators=100,
             max_depth=5,
             random_state=42
         )
         
+        # Create ensemble model
         model = VotingClassifier(
             estimators=[('xgb', xgb), ('rf', rf)],
             voting='soft'
@@ -176,9 +139,11 @@ def train_model(df):
         
         model.fit(X_train, y_train)
         
+        # Evaluate
         y_pred = model.predict(X_test)
         report = classification_report(y_test, y_pred, output_dict=True)
         
+        # Generate SHAP values
         explainer = shap.TreeExplainer(model.named_estimators_['xgb'])
         shap_values = explainer.shap_values(X_train)
         
@@ -191,18 +156,23 @@ def predict_ca_risk(input_data, model):
     """Predict CA risk for input data"""
     try:
         if isinstance(input_data, dict):
+            # Single student prediction
             df = pd.DataFrame([input_data])
         else:
+            # Batch prediction
             df = input_data.copy()
         
+        # Preprocess
         df_processed = preprocess_data(df, is_training=False)
         
+        # Ensure columns match training data
         if hasattr(model, 'feature_names_in_'):
             missing_cols = set(model.feature_names_in_) - set(df_processed.columns)
             for col in missing_cols:
                 df_processed[col] = 0
             df_processed = df_processed[model.feature_names_in_]
         
+        # Predict
         if isinstance(model, (XGBClassifier, VotingClassifier)):
             risk = model.predict_proba(df_processed)[:, 1]
         else:
@@ -216,10 +186,9 @@ def predict_ca_risk(input_data, model):
 def plot_shap_summary(explainer, shap_values, features):
     """Create SHAP summary plot"""
     st.subheader("SHAP Feature Importance")
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots()
     shap.summary_plot(shap_values, features, plot_type="bar", show=False)
-    plt.tight_layout()
-    st.pyplot(fig, use_container_width=True)
+    st.pyplot(fig)
     plt.clf()
 
 def plot_student_history(student_id):
@@ -265,12 +234,10 @@ def generate_geographic_map(df):
     
     st.subheader("Geographic Risk Distribution")
     
-    # Use sample data if no real addresses exist
-    if df['Address'].isnull().all():
-        sample_df, _ = generate_sample_data()
-        df['Address'] = sample_df['Address'].sample(len(df)).values
-    
+    # Sample geocoding - in production you'd want to cache these results
     geolocator = Nominatim(user_agent="ca_predictor")
+    
+    # Take a sample to avoid geocoding too many addresses
     sample_df = df.sample(min(50, len(df)))
     
     locations = []
@@ -288,6 +255,7 @@ def generate_geographic_map(df):
             continue
     
     if locations:
+        # Create map centered on first location
         m = folium.Map(location=[locations[0]['lat'], locations[0]['lon']], zoom_start=12)
         
         for loc in locations:
@@ -303,14 +271,7 @@ def generate_geographic_map(df):
         
         folium_static(m)
     else:
-        st.warning("Could not geocode addresses. Using sample locations.")
-        # Fallback to static sample locations
-        m = folium.Map(location=[37.7749, -122.4194], zoom_start=12)
-        folium.Marker(
-            location=[37.7749, -122.4194],
-            popup="Sample Location 1"
-        ).add_to(m)
-        folium_static(m)
+        st.warning("Could not geocode addresses")
 
 def what_if_analysis(student_data, changes):
     """Perform what-if analysis based on proposed changes"""
@@ -328,6 +289,7 @@ def intervention_cost_benefit(students_df):
     """Analyze cost vs benefit of interventions"""
     st.subheader("Intervention Cost-Benefit Analysis")
     
+    # Calculate potential reductions
     interventions = st.session_state.interventions
     thresholds = st.session_state.risk_thresholds
     
@@ -353,8 +315,10 @@ def intervention_cost_benefit(students_df):
     
     results_df = pd.DataFrame(results)
     
+    # Show table
     st.dataframe(results_df.sort_values('Cost per Case Prevented'))
     
+    # Show scatter plot
     fig = px.scatter(
         results_df,
         x='Potential Cases Prevented',
@@ -408,11 +372,13 @@ if app_mode == "System Training":
     
     if uploaded_file:
         try:
+            # Read file
             if uploaded_file.name.endswith('.xlsx'):
                 df = pd.read_excel(uploaded_file)
             else:
                 df = pd.read_csv(uploaded_file)
             
+            # Validate columns
             required_cols = {'Grade', 'Gender', 'Present_Days', 'Absent_Days', 
                            'Meal_Code', 'Academic_Performance', 'CA_Status'}
             missing_cols = required_cols - set(df.columns)
@@ -420,16 +386,20 @@ if app_mode == "System Training":
             if missing_cols:
                 st.error(f"Missing required columns: {', '.join(missing_cols)}")
             else:
+                # Store historical data for time-series analysis
                 if 'Date' in df.columns and 'Student_ID' in df.columns:
                     df['Date'] = pd.to_datetime(df['Date'])
                     st.session_state.historical_data = df
                     
+                    # Build student history dictionary
                     for student_id, group in df.groupby('Student_ID'):
                         st.session_state.student_history[student_id] = group.sort_values('Date')
                 
+                # Show data preview
                 st.subheader("Data Preview")
                 st.dataframe(df.head())
                 
+                # Train model
                 if st.button("Train Prediction Model", type="primary"):
                     with st.spinner("Training model... This may take a few minutes"):
                         model, report, shap_data = train_model(df)
@@ -438,6 +408,7 @@ if app_mode == "System Training":
                             st.session_state.model = model
                             st.success("Model trained successfully!")
                             
+                            # Show performance metrics
                             st.subheader("Model Performance")
                             st.json({
                                 "Accuracy": report['accuracy'],
@@ -446,6 +417,8 @@ if app_mode == "System Training":
                                 "F1-Score (CA)": report['1']['f1-score']
                             })
                             
+                            # Feature importance
+                            st.subheader("Top Predictive Factors")
                             feature_importance = pd.DataFrame({
                                 'Feature': model.named_estimators_['xgb'].feature_names_in_,
                                 'Importance': model.named_estimators_['xgb'].feature_importances_
@@ -460,10 +433,12 @@ if app_mode == "System Training":
                             )
                             st.plotly_chart(fig)
                             
+                            # SHAP summary plot
                             if shap_data:
                                 explainer, shap_values, X_train = shap_data
                                 plot_shap_summary(explainer, shap_values, X_train)
                             
+                            # Download model
                             with tempfile.NamedTemporaryFile(delete=False) as tmp:
                                 joblib.dump(model, tmp.name)
                                 with open(tmp.name, 'rb') as f:
@@ -481,6 +456,7 @@ elif app_mode == "Batch Prediction":
     if st.session_state.model is None:
         st.warning("Please train a model first in the System Training section.")
     else:
+        # Citywide mode toggle
         st.session_state.citywide_mode = st.checkbox(
             "Enable Citywide Mode (track students across schools)",
             value=st.session_state.citywide_mode
@@ -494,11 +470,13 @@ elif app_mode == "Batch Prediction":
         
         if uploaded_file:
             try:
+                # Read file
                 if uploaded_file.name.endswith('.xlsx'):
                     current_df = pd.read_excel(uploaded_file)
                 else:
                     current_df = pd.read_csv(uploaded_file)
                 
+                # Validate columns
                 required_cols = {'Student_ID', 'Grade', 'Gender', 'Present_Days', 
                                'Absent_Days', 'Meal_Code', 'Academic_Performance'}
                 missing_cols = required_cols - set(current_df.columns)
@@ -506,16 +484,20 @@ elif app_mode == "Batch Prediction":
                 if missing_cols:
                     st.error(f"Missing required columns: {', '.join(missing_cols)}")
                 else:
+                    # Show data preview
                     st.subheader("Current Data Preview")
                     st.dataframe(current_df.head())
                     
+                    # Predict
                     if st.button("Predict CA Risks", type="primary"):
                         with st.spinner("Predicting risks..."):
+                            # Calculate attendance percentage
                             current_df['Attendance_Percentage'] = (
                                 current_df['Present_Days'] / 
                                 (current_df['Present_Days'] + current_df['Absent_Days'])
                             ) * 100
                             
+                            # Predict
                             risks = predict_ca_risk(current_df, st.session_state.model)
                             
                             if risks is not None:
@@ -528,10 +510,13 @@ elif app_mode == "Batch Prediction":
                                     labels=['Low', 'Medium', 'High']
                                 )
                                 
+                                # Store for analytics
                                 st.session_state.current_df = current_df
                                 
+                                # Show results
                                 st.subheader("Prediction Results")
                                 
+                                # Risk distribution
                                 col1, col2, col3 = st.columns(3)
                                 with col1:
                                     low_count = (current_df['CA_Risk_Level'] == 'Low').sum()
@@ -543,6 +528,7 @@ elif app_mode == "Batch Prediction":
                                     high_count = (current_df['CA_Risk_Level'] == 'High').sum()
                                     st.metric("High Risk", high_count)
                                 
+                                # Risk distribution chart
                                 fig1 = px.pie(
                                     current_df,
                                     names='CA_Risk_Level',
@@ -556,6 +542,7 @@ elif app_mode == "Batch Prediction":
                                 )
                                 st.plotly_chart(fig1, use_container_width=True)
                                 
+                                # Risk by grade
                                 fig2 = px.box(
                                     current_df,
                                     x='Grade',
@@ -565,6 +552,7 @@ elif app_mode == "Batch Prediction":
                                 )
                                 st.plotly_chart(fig2, use_container_width=True)
                                 
+                                # Download results
                                 csv = current_df.to_csv(index=False)
                                 st.download_button(
                                     "Download Predictions",
@@ -574,6 +562,8 @@ elif app_mode == "Batch Prediction":
                                 )
             except Exception as e:
                 st.error(f"Error processing file: {str(e)}")
+
+
 
 # Single Student Check Section
 elif app_mode == "Single Student Check":
