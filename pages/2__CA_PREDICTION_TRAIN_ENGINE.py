@@ -183,13 +183,98 @@ def predict_ca_risk(input_data, model):
         st.error(f"Prediction error: {str(e)}")
         return None
 
+#%% 1. Updated SHAP Feature Importance Plot (Replace existing plot_shap_summary function)
 def plot_shap_summary(explainer, shap_values, features):
-    """Create SHAP summary plot"""
+    """Create SHAP feature importance plot using Plotly for better readability"""
     st.subheader("SHAP Feature Importance")
-    fig, ax = plt.subplots()
-    shap.summary_plot(shap_values, features, plot_type="bar", show=False)
-    st.pyplot(fig)
-    plt.clf()
+    
+    # Get feature importance values
+    feature_importance = pd.DataFrame({
+        'Feature': features.columns,
+        'Importance': np.abs(shap_values).mean(0)
+    }).sort_values('Importance', ascending=True)
+    
+    # Create interactive bar plot
+    fig = px.bar(
+        feature_importance,
+        x='Importance',
+        y='Feature',
+        orientation='h',
+        title='Feature Impact on Chronic Absenteeism Risk',
+        labels={'Importance': 'Average Absolute SHAP Value'},
+        height=600  # Increased height for better visibility
+    )
+    
+    # Update layout for better readability
+    fig.update_layout(
+        margin=dict(l=150, r=50, t=60, b=50),  # Adjust left margin for long feature names
+        xaxis_title="Average Impact on Model Output",
+        yaxis_title="Features",
+        font=dict(size=14)
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+#%% 2. Adjusted Single Student Analysis Plot Sizing (Update SHAP explanation section)
+# Inside Single Student Check section after risk calculation:
+                # SHAP explanation with adjusted sizing
+                if hasattr(st.session_state.model, 'named_estimators_'):
+                    try:
+                        xgb_model = st.session_state.model.named_estimators_['xgb']
+                        explainer = shap.TreeExplainer(xgb_model)
+                        
+                        df_processed = preprocess_data(pd.DataFrame([input_data]), is_training=False)
+                        
+                        if hasattr(xgb_model, 'feature_names_in_'):
+                            missing_cols = set(xgb_model.feature_names_in_) - set(df_processed.columns)
+                            for col in missing_cols:
+                                df_processed[col] = 0
+                            df_processed = df_processed[xgb_model.feature_names_in_]
+                        
+                        shap_values = explainer.shap_values(df_processed)
+                        
+                        st.subheader("Risk Factor Breakdown")
+                        plt.figure(figsize=(10, 4), dpi=100)  # Set explicit figure size and DPI
+                        shap.force_plot(
+                            explainer.expected_value,
+                            shap_values[0],
+                            df_processed.iloc[0],
+                            matplotlib=True,
+                            show=False
+                        )
+                        st.pyplot(plt.gcf(), use_container_width=True)  # Use container width
+                        plt.clf()
+
+#%% 3. Fixed Label Encoding for Unknown Values (Update preprocess_data function)
+def preprocess_data(df, is_training=True):
+    """Preprocess the input data with handling for unknown categories"""
+    df = df.copy()
+    
+    # Create attendance percentage if missing
+    if 'Attendance_Percentage' not in df.columns:
+        if 'Present_Days' in df.columns and 'Absent_Days' in df.columns:
+            df['Attendance_Percentage'] = (df['Present_Days'] / 
+                                         (df['Present_Days'] + df['Absent_Days'])) * 100
+    
+    # Handle categorical features
+    cat_cols = ['Gender', 'Meal_Code', 'School']
+    for col in cat_cols:
+        if col in df.columns:
+            if is_training:
+                # Fit new encoder
+                le = LabelEncoder()
+                df[col] = le.fit_transform(df[col])
+                st.session_state.label_encoders[col] = le
+            else:
+                # Transform with existing encoder, handling unknown values
+                if col in st.session_state.label_encoders:
+                    le = st.session_state.label_encoders[col]
+                    # Replace unknown categories with most frequent category
+                    df[col] = df[col].apply(lambda x: x if x in le.classes_ else le.classes_[0])
+                    df[col] = le.transform(df[col])
+    
+    return df
+
 
 def plot_student_history(student_id):
     """Plot historical trends for a student"""
@@ -689,7 +774,7 @@ elif app_mode == "Single Student Check":
                         shap_values = explainer.shap_values(df_processed)
                         
                         st.subheader("Risk Factor Breakdown")
-                        fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
+                        fig, ax = plt.subplots(figsize=(10, 4))
                         shap.force_plot(
                             explainer.expected_value,
                             shap_values[0],
