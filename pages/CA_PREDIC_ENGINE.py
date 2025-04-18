@@ -345,12 +345,21 @@ def what_if_analysis(student_data):
     """Perform what-if analysis without page refresh"""
     st.subheader("What-If Analysis")
     
+    # Initialize with default values if not exists
+    defaults = {
+        'present': student_data.get('Present_Days', 90),
+        'absent': student_data.get('Absent_Days', 10),
+        'performance': student_data.get('Academic_Performance', 75)
+    }
+    
+    # Initialize or update session state
     if 'what_if_params' not in st.session_state:
-        st.session_state.what_if_params = {
-            'present': student_data.get('Present_Days', 90),
-            'absent': student_data.get('Absent_Days', 10),
-            'performance': student_data.get('Academic_Performance', 75)
-        }
+        st.session_state.what_if_params = defaults
+    else:
+        # Ensure all keys exist with current student data
+        for key in defaults:
+            if key not in st.session_state.what_if_params:
+                st.session_state.what_if_params[key] = defaults[key]
     
     col1, col2 = st.columns(2)
     
@@ -359,7 +368,7 @@ def what_if_analysis(student_data):
             "Present Days", 
             min_value=0, 
             max_value=200,
-            value=st.session_state.what_if_params['present'],
+            value=st.session_state.what_if_params.get('present', 90),
             key="wi_present"
         )
         
@@ -368,7 +377,7 @@ def what_if_analysis(student_data):
             "Absent Days",
             min_value=0,
             max_value=200,
-            value=st.session_state.what_if_params['absent'],
+            value=st.session_state.what_if_params.get('absent', 10),
             key="wi_absent"
         )
     
@@ -376,7 +385,7 @@ def what_if_analysis(student_data):
         "Academic Performance",
         min_value=0,
         max_value=100,
-        value=st.session_state.what_if_params['performance'],
+        value=st.session_state.what_if_params.get('performance', 75),
         key="wi_performance"
     )
     
@@ -395,12 +404,6 @@ def what_if_analysis(student_data):
         with col2:
             st.metric("New Risk", f"{new_risk:.1%}", 
                      delta=f"{(new_risk - original_risk):+.1%}")
-        
-        st.session_state.what_if_changes = {
-            'original': original_risk,
-            'new': new_risk,
-            'change': new_risk - original_risk
-        }
 
 def intervention_cost_benefit(students_df):
     """Analyze cost vs benefit of interventions"""
