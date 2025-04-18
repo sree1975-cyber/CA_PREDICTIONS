@@ -516,7 +516,7 @@ def system_training():
                                     href = f'<a href="data:application/octet-stream;base64,{b64}" download="ca_model.pkl">Download Trained Model</a>'
                                     st.markdown(href, unsafe_allow_html=True)
       except Exception as e:
-      st.error(f"Error processing file: {str(e)}")
+        st.error(f"Error processing file: {str(e)}")
             
        #10: Batch Prediction Function
        def batch_prediction():
