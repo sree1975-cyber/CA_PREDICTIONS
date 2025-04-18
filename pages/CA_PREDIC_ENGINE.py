@@ -342,58 +342,63 @@ def generate_geographic_map(df):
         folium_static(m)
 
 def what_if_analysis(student_data):
-    """Perform what-if analysis without page refresh"""
+    """Perform what-if analysis without page refreshes"""
     st.subheader("What-If Analysis")
     
-    # Initialize with default values if not exists
+    # Initialize session state parameters
     defaults = {
         'present': student_data.get('Present_Days', 90),
         'absent': student_data.get('Absent_Days', 10),
         'performance': student_data.get('Academic_Performance', 75)
     }
     
-    # Initialize or update session state
-    if 'what_if_params' not in st.session_state:
-        st.session_state.what_if_params = defaults
-    else:
-        # Ensure all keys exist with current student data
-        for key in defaults:
-            if key not in st.session_state.what_if_params:
-                st.session_state.what_if_params[key] = defaults[key]
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.session_state.what_if_params['present'] = st.slider(
-            "Present Days", 
-            min_value=0, 
-            max_value=200,
-            value=st.session_state.what_if_params.get('present', 90),
-            key="wi_present"
+    # Initialize session state with default values
+    for key in defaults:
+        if f'wi_{key}' not in st.session_state:
+            st.session_state[f'wi_{key}'] = defaults[key]
+
+    # Use a form to prevent individual slider updates from triggering reruns
+    with st.form(key='what_if_form'):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            new_present = st.slider(
+                "Present Days", 
+                min_value=0, 
+                max_value=200,
+                value=st.session_state.wi_present,
+                key='wi_present_slider'
+            )
+            
+        with col2:
+            new_absent = st.slider(
+                "Absent Days",
+                min_value=0,
+                max_value=200,
+                value=st.session_state.wi_absent,
+                key='wi_absent_slider'
+            )
+        
+        new_performance = st.slider(
+            "Academic Performance",
+            min_value=0,
+            max_value=100,
+            value=st.session_state.wi_performance,
+            key='wi_performance_slider'
         )
         
-    with col2:
-        st.session_state.what_if_params['absent'] = st.slider(
-            "Absent Days",
-            min_value=0,
-            max_value=200,
-            value=st.session_state.what_if_params.get('absent', 10),
-            key="wi_absent"
-        )
-    
-    st.session_state.what_if_params['performance'] = st.slider(
-        "Academic Performance",
-        min_value=0,
-        max_value=100,
-        value=st.session_state.what_if_params.get('performance', 75),
-        key="wi_performance"
-    )
-    
-    if st.button("Calculate New Risk", key="wi_calculate"):
+        # Only update values on form submit
+        if st.form_submit_button("Calculate New Risk", type='primary'):
+            st.session_state.wi_present = new_present
+            st.session_state.wi_absent = new_absent
+            st.session_state.wi_performance = new_performance
+
+    # Display results only after calculation
+    if 'wi_present' in st.session_state:
         modified_data = student_data.copy()
-        modified_data['Present_Days'] = st.session_state.what_if_params['present']
-        modified_data['Absent_Days'] = st.session_state.what_if_params['absent']
-        modified_data['Academic_Performance'] = st.session_state.what_if_params['performance']
+        modified_data['Present_Days'] = st.session_state.wi_present
+        modified_data['Absent_Days'] = st.session_state.wi_absent
+        modified_data['Academic_Performance'] = st.session_state.wi_performance
         
         original_risk = predict_ca_risk(student_data, st.session_state.model)[0]
         new_risk = predict_ca_risk(modified_data, st.session_state.model)[0]
