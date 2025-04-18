@@ -341,62 +341,74 @@ def generate_geographic_map(df):
         ).add_to(m)
         folium_static(m)
 
-  # What-If Analysis Section
-    if st.session_state.what_if['results']:
-        st.divider()
-        st.subheader("What-If Analysis")
-        
-        # Use session state values for sliders
-        new_present = st.slider("Adjust Present Days", 
-                               min_value=0, max_value=365,
-                               value=st.session_state.what_if['present'],
-                               key='wi_present')
-        
-        new_absent = st.slider("Adjust Absent Days", 
-                              min_value=0, max_value=365,
-                              value=st.session_state.what_if['absent'],
-                              key='wi_absent')
-        
-        new_performance = st.slider("Adjust Academic Performance", 
-                                  min_value=0, max_value=100,
-                                  value=st.session_state.what_if['performance'],
-                                  key='wi_performance')
-        
-        # Update button
-        if st.button("Calculate New Risk", key='wi_calculate'):
-            # Update session state with new values
-            st.session_state.what_if.update({
-                'present': new_present,
-                'absent': new_absent,
-                'performance': new_performance
-            })
-            
-            # Create modified data
-            modified_data = st.session_state.what_if['results']['current_inputs'].copy()
-            modified_data.update({
-                'Present_Days': new_present,
-                'Absent_Days': new_absent,
-                'Academic_Performance': new_performance
-            })
-            
-            # Calculate new risk
-            new_risk = predict_ca_risk(modified_data, st.session_state.model)
-            if new_risk is not None:
-                st.session_state.what_if['results'].update({
-                    'new_risk': float(new_risk[0])
-                })
+def what_if_analysis(student_data):
+    """Perform what-if analysis without page refreshes"""
+    st.subheader("What-If Analysis")
+    
+    # Initialize session state parameters
+    defaults = {
+        'present': student_data.get('Present_Days', 90),
+        'absent': student_data.get('Absent_Days', 10),
+        'performance': student_data.get('Academic_Performance', 75)
+    }
+    
+    # Initialize session state with default values
+    for key in defaults:
+        if f'wi_{key}' not in st.session_state:
+            st.session_state[f'wi_{key}'] = defaults[key]
 
-        # Display results
-        if 'new_risk' in st.session_state.what_if['results']:
-            st.divider()
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Original Risk", 
-                         f"{st.session_state.what_if['results']['original_risk']:.1%}")
-            with col2:
-                st.metric("Updated Risk", 
-                         f"{st.session_state.what_if['results']['new_risk']:.1%}", 
-                         delta=f"{st.session_state.what_if['results']['new_risk'] - st.session_state.what_if['results']['original_risk']:+.1%}")
+    # Use a form to prevent individual slider updates from triggering reruns
+    with st.form(key='what_if_form'):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            new_present = st.slider(
+                "Present Days", 
+                min_value=0, 
+                max_value=200,
+                value=st.session_state.wi_present,
+                key='wi_present_slider'
+            )
+            
+        with col2:
+            new_absent = st.slider(
+                "Absent Days",
+                min_value=0,
+                max_value=200,
+                value=st.session_state.wi_absent,
+                key='wi_absent_slider'
+            )
+        
+        new_performance = st.slider(
+            "Academic Performance",
+            min_value=0,
+            max_value=100,
+            value=st.session_state.wi_performance,
+            key='wi_performance_slider'
+        )
+        
+        # Only update values on form submit
+        if st.form_submit_button("Calculate New Risk", type='primary'):
+            st.session_state.wi_present = new_present
+            st.session_state.wi_absent = new_absent
+            st.session_state.wi_performance = new_performance
+
+    # Display results only after calculation
+    if 'wi_present' in st.session_state:
+        modified_data = student_data.copy()
+        modified_data['Present_Days'] = st.session_state.wi_present
+        modified_data['Absent_Days'] = st.session_state.wi_absent
+        modified_data['Academic_Performance'] = st.session_state.wi_performance
+        
+        original_risk = predict_ca_risk(student_data, st.session_state.model)[0]
+        new_risk = predict_ca_risk(modified_data, st.session_state.model)[0]
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Original Risk", f"{original_risk:.1%}")
+        with col2:
+            st.metric("New Risk", f"{new_risk:.1%}", 
+                     delta=f"{(new_risk - original_risk):+.1%}")
             
 def intervention_cost_benefit(students_df):
     """Analyze cost vs benefit of interventions"""
@@ -622,44 +634,28 @@ def batch_prediction():
                 st.error(f"Error processing file: {str(e)}")
 
 def single_student_check():
-    """Single Student Check with persistent What-If values"""
+    """Single Student Check section with all fixes"""
     st.header("👤 Single Student Check")
     
-    # Initialize session state for What-If parameters
-    if 'what_if' not in st.session_state:
-        st.session_state.what_if = {
-            'present': 45,  # Default values
-            'absent': 10,
-            'performance': 75,
-            'results': None
-        }
-
-    # Main input form
-    with st.form(key='student_form'):
-        col1, col2 = st.columns(2)
+    if st.session_state.model is None:
+        st.warning("Please train a model first in the System Training section.")
+        return
+    
+    with st.form(key='student_input_form'):
+        st.subheader("Student Information")
         
+        col1, col2 = st.columns(2)
         with col1:
-            student_id = st.text_input("Student ID", key="student_id")
+            student_id = st.text_input("Student ID (Optional)", key="student_id")
             grade = st.selectbox("Grade", range(1, 13), index=5, key="grade")
             gender = st.selectbox("Gender", ["Male", "Female", "Other", "Unknown"], key="gender")
             meal_code = st.selectbox("Meal Code", ["Free", "Reduced", "Paid", "Unknown"], key="meal_code")
         
         with col2:
-            # Use session state values for inputs
-            present_days = st.number_input("Present Days", 
-                                         min_value=0, max_value=365, 
-                                         value=st.session_state.what_if['present'],
-                                         key="present_days")
-            
-            absent_days = st.number_input("Absent Days", 
-                                        min_value=0, max_value=365, 
-                                        value=st.session_state.what_if['absent'],
-                                        key="absent_days")
-            
-            academic_performance = st.number_input("Academic Performance", 
-                                                 min_value=0, max_value=100, 
-                                                 value=st.session_state.what_if['performance'],
-                                                 key="academic_performance")
+            present_days = st.number_input("Present Days", min_value=0, max_value=365, value=45, key="present_days")
+            absent_days = st.number_input("Absent Days", min_value=0, max_value=365, value=10, key="absent_days")
+            academic_performance = st.number_input("Academic Performance (0-100)", 
+                                                min_value=0, max_value=100, value=75, key="academic_performance")
             
             if st.session_state.citywide_mode:
                 transferred = st.checkbox("Transferred student?", key="transferred")
@@ -667,33 +663,8 @@ def single_student_check():
                     prev_ca = st.selectbox("Previous school CA status", 
                                          ["Unknown", "Yes", "No"], key="prev_ca")
         
-        # Form submit handler
-        if st.form_submit_button("Check Risk", type="primary"):
-            # Store current values in session state
-            st.session_state.what_if.update({
-                'present': present_days,
-                'absent': absent_days,
-                'performance': academic_performance
-            })
-            
-            # Calculate initial risk
-            input_data = {
-                'Student_ID': student_id,
-                'Grade': grade,
-                'Gender': gender,
-                'Present_Days': present_days,
-                'Absent_Days': absent_days,
-                'Meal_Code': meal_code,
-                'Academic_Performance': academic_performance
-            }
-            
-            risk = predict_ca_risk(input_data, st.session_state.model)
-            if risk is not None:
-                st.session_state.what_if['results'] = {
-                    'original_risk': float(risk[0]),
-                    'current_inputs': input_data
-                }
-     
+        submitted = st.form_submit_button("Check Risk", type="primary")
+    
     if submitted:
         input_data = {
             'Student_ID': student_id,
