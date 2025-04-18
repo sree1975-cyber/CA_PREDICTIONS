@@ -251,6 +251,7 @@ elif app_mode == "Model Training & Evaluation":
     
     test_size = st.slider("Test set size (%)", 10, 40, 20)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size/100, random_state=42)
+    st.session_state.X_train_columns = X_train.columns.tolist()
     
     # Model selection
     st.subheader("Model Selection")
@@ -420,6 +421,9 @@ elif app_mode == "Predictions":
     input_df = pd.DataFrame([input_data])
     
     # Ensure all columns are present (fill missing with 0)
+    if "X_train_columns" not in st.session_state:
+        st.warning("Please train a model first to generate column structure.")
+        st.stop()
     for col in st.session_state.X_train_columns:
         if col not in input_df.columns:
             input_df[col] = 0
