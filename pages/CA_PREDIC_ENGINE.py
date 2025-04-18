@@ -531,6 +531,50 @@ def system_training():
         except Exception as e:
             st.error(f"Error processing file: {str(e)}")
 
+def plot_temporal_trends():
+    """Fixed temporal trends visualization"""
+    if not st.session_state.historical_data.empty:
+        # Ensure proper date conversion
+        df = st.session_state.historical_data.copy()
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
+        
+        # Aggregate data properly
+        trend_data = df.groupby('Date').agg({
+            'Attendance_Percentage': 'mean',
+            'CA_Status': 'mean'
+        }).reset_index()
+        
+        # Create dual-axis plot
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=trend_data['Date'],
+            y=trend_data['Attendance_Percentage'],
+            name='Attendance Rate',
+            line=dict(color='blue')
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=trend_data['Date'],
+            y=trend_data['CA_Status']*100,
+            name='CA Rate',
+            line=dict(color='red'),
+            yaxis='y2'
+        ))
+        
+        fig.update_layout(
+            title='Historical Attendance Trends',
+            yaxis=dict(title='Attendance Percentage'),
+            yaxis2=dict(
+                title='CA Rate Percentage',
+                overlaying='y',
+                side='right'
+            ),
+            height=500
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("No historical data available for temporal analysis")
+
 def batch_prediction():
     """Batch Prediction section"""
     st.header("📊 Batch Prediction")
