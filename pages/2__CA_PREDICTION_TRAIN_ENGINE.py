@@ -689,7 +689,7 @@ elif app_mode == "Single Student Check":
                         shap_values = explainer.shap_values(df_processed)
                         
                         st.subheader("Risk Factor Breakdown")
-                        fig, ax = plt.subplots(figsize=(10, 4))
+                        fig, ax = plt.subplots(figsize=(8, 4))
                         shap.force_plot(
                             explainer.expected_value,
                             shap_values[0],
