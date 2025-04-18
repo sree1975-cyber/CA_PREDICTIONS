@@ -281,8 +281,7 @@ def plot_student_history(student_id):
                 title='CA Risk Percentage',
                 overlaying='y',
                 side='right'
-            )
-        )
+            ) )
         
         st.plotly_chart(fig, use_container_width=True)
     else:
