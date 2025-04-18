@@ -1,4 +1,4 @@
-# Chronic Absenteeism Predictor - Complete Implementation
+# Chronic Absenteeism Predictor - Corrected Implementation
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -41,6 +41,10 @@ st.markdown("""
     div.stShap svg {width: 100% !important; height: auto !important;}
     .stSlider {padding: 0.5rem;}
     .feature-importance-container {width: 100%; margin-top: 20px;}
+    .disabled-input {
+        background-color: #f0f0f0;
+        color: #666;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -70,6 +74,12 @@ if 'what_if_params' not in st.session_state:
     st.session_state.what_if_params = {}
 if 'what_if_changes' not in st.session_state:
     st.session_state.what_if_changes = {}
+if 'student_data' not in st.session_state:
+    st.session_state.student_data = None
+if 'risk_level' not in st.session_state:
+    st.session_state.risk_level = None
+if 'what_if_results' not in st.session_state:
+    st.session_state.what_if_results = None
 
 # Helper functions
 def generate_sample_data():
@@ -345,17 +355,13 @@ def what_if_analysis(student_data):
     """Perform what-if analysis without page refreshes"""
     st.subheader("What-If Analysis")
     
-    # Initialize session state parameters
-    defaults = {
-        'present': student_data.get('Present_Days', 90),
-        'absent': student_data.get('Absent_Days', 10),
-        'performance': student_data.get('Academic_Performance', 75)
-    }
-    
-    # Initialize session state with default values
-    for key in defaults:
-        if f'wi_{key}' not in st.session_state:
-            st.session_state[f'wi_{key}'] = defaults[key]
+    # Initialize session state parameters if not exists
+    if 'wi_present' not in st.session_state:
+        st.session_state.wi_present = student_data.get('Present_Days', 90)
+    if 'wi_absent' not in st.session_state:
+        st.session_state.wi_absent = student_data.get('Absent_Days', 10)
+    if 'wi_performance' not in st.session_state:
+        st.session_state.wi_performance = student_data.get('Academic_Performance', 75)
 
     # Use a form to prevent individual slider updates from triggering reruns
     with st.form(key='what_if_form'):
@@ -392,24 +398,68 @@ def what_if_analysis(student_data):
             st.session_state.wi_present = new_present
             st.session_state.wi_absent = new_absent
             st.session_state.wi_performance = new_performance
+            
+            modified_data = student_data.copy()
+            modified_data['Present_Days'] = new_present
+            modified_data['Absent_Days'] = new_absent
+            modified_data['Academic_Performance'] = new_performance
+            
+            original_risk = predict_ca_risk(student_data, st.session_state.model)[0]
+            new_risk = predict_ca_risk(modified_data, st.session_state.model)[0]
+            
+            st.session_state.what_if_results = {
+                'original_risk': original_risk,
+                'new_risk': new_risk,
+                'modified_data': modified_data
+            }
 
-    # Display results only after calculation
-    if 'wi_present' in st.session_state:
-        modified_data = student_data.copy()
-        modified_data['Present_Days'] = st.session_state.wi_present
-        modified_data['Absent_Days'] = st.session_state.wi_absent
-        modified_data['Academic_Performance'] = st.session_state.wi_performance
-        
-        original_risk = predict_ca_risk(student_data, st.session_state.model)[0]
-        new_risk = predict_ca_risk(modified_data, st.session_state.model)[0]
-        
+    # Display results from session state
+    if st.session_state.what_if_results:
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Original Risk", f"{original_risk:.1%}")
+            st.metric("Original Risk", f"{st.session_state.what_if_results['original_risk']:.1%}")
         with col2:
-            st.metric("New Risk", f"{new_risk:.1%}", 
-                     delta=f"{(new_risk - original_risk):+.1%}")
+            st.metric("New Risk", f"{st.session_state.what_if_results['new_risk']:.1%}", 
+                     delta=f"{(st.session_state.what_if_results['new_risk'] - st.session_state.what_if_results['original_risk']):+.1%}")
+        
+        # Update risk level based on new risk
+        thresholds = st.session_state.risk_thresholds
+        new_risk = st.session_state.what_if_results['new_risk']
+        if new_risk < thresholds['low']:
+            st.session_state.risk_level = "Low"
+        elif new_risk < thresholds['medium']:
+            st.session_state.risk_level = "Medium"
+        else:
+            st.session_state.risk_level = "High"
             
+        # Show updated recommendations
+        show_recommendations(st.session_state.risk_level)
+
+def show_recommendations(risk_level):
+    """Show recommendations based on risk level"""
+    st.subheader("Recommended Actions")
+    if risk_level == "High":
+        st.markdown("""
+        - **Immediate counselor meeting**
+        - **Parent/guardian notification**
+        - **Attendance improvement plan**
+        - **Academic support services**
+        - **Weekly monitoring**
+        """)
+    elif risk_level == "Medium":
+        st.markdown("""
+        - **Monthly check-ins**
+        - **Mentor assignment**
+        - **After-school program referral**
+        - **Quarterly parent meetings**
+        """)
+    else:
+        st.markdown("""
+        - **Continue regular monitoring**
+        - **Positive reinforcement**
+        - **Encourage extracurriculars**
+        """)
+
 def intervention_cost_benefit(students_df):
     """Analyze cost vs benefit of interventions"""
     st.subheader("Intervention Cost-Benefit Analysis")
@@ -451,6 +501,21 @@ def intervention_cost_benefit(students_df):
         title='Intervention Cost vs Effectiveness'
     )
     st.plotly_chart(fig, use_container_width=True)
+
+def get_student_data(student_id):
+    """Fetch student data from historical records"""
+    if student_id in st.session_state.student_history:
+        latest_record = st.session_state.student_history[student_id].iloc[-1]
+        return {
+            'Student_ID': student_id,
+            'Grade': latest_record['Grade'],
+            'Gender': latest_record['Gender'],
+            'Present_Days': latest_record['Present_Days'],
+            'Absent_Days': latest_record['Absent_Days'],
+            'Meal_Code': latest_record['Meal_Code'],
+            'Academic_Performance': latest_record['Academic_Performance']
+        }
+    return None
 
 # Application Sections
 def system_training():
@@ -641,60 +706,130 @@ def single_student_check():
         st.warning("Please train a model first in the System Training section.")
         return
     
+    # Initialize student data in session state if not exists
+    if 'student_data' not in st.session_state:
+        st.session_state.student_data = None
+    
+    # Check if we're in student lookup mode or manual input mode
+    student_lookup_mode = False
+    
     with st.form(key='student_input_form'):
         st.subheader("Student Information")
         
+        student_id = st.text_input("Student ID (Optional)", key="student_id_input")
+        
+        if student_id:
+            # Try to fetch student data
+            student_data = get_student_data(student_id)
+            if student_data:
+                st.session_state.student_data = student_data
+                student_lookup_mode = True
+                st.success(f"Found data for student {student_id}")
+            else:
+                st.warning(f"No historical data found for student {student_id}")
+        
         col1, col2 = st.columns(2)
         with col1:
-            student_id = st.text_input("Student ID (Optional)", key="student_id")
-            grade = st.selectbox("Grade", range(1, 13), index=5, key="grade")
-            gender = st.selectbox("Gender", ["Male", "Female", "Other", "Unknown"], key="gender")
-            meal_code = st.selectbox("Meal Code", ["Free", "Reduced", "Paid", "Unknown"], key="meal_code")
+            # Disable fields if in student lookup mode
+            grade = st.selectbox(
+                "Grade", 
+                range(1, 13), 
+                index=5, 
+                key="grade",
+                disabled=student_lookup_mode
+            )
+            gender = st.selectbox(
+                "Gender", 
+                ["Male", "Female", "Other", "Unknown"], 
+                key="gender",
+                disabled=student_lookup_mode
+            )
+            meal_code = st.selectbox(
+                "Meal Code", 
+                ["Free", "Reduced", "Paid", "Unknown"], 
+                key="meal_code",
+                disabled=student_lookup_mode
+            )
         
         with col2:
-            present_days = st.number_input("Present Days", min_value=0, max_value=365, value=45, key="present_days")
-            absent_days = st.number_input("Absent Days", min_value=0, max_value=365, value=10, key="absent_days")
-            academic_performance = st.number_input("Academic Performance (0-100)", 
-                                                min_value=0, max_value=100, value=75, key="academic_performance")
+            present_days = st.number_input(
+                "Present Days", 
+                min_value=0, 
+                max_value=365, 
+                value=45, 
+                key="present_days",
+                disabled=student_lookup_mode
+            )
+            absent_days = st.number_input(
+                "Absent Days", 
+                min_value=0, 
+                max_value=365, 
+                value=10, 
+                key="absent_days",
+                disabled=student_lookup_mode
+            )
+            academic_performance = st.number_input(
+                "Academic Performance (0-100)", 
+                min_value=0, 
+                max_value=100, 
+                value=75, 
+                key="academic_performance",
+                disabled=student_lookup_mode
+            )
             
             if st.session_state.citywide_mode:
-                transferred = st.checkbox("Transferred student?", key="transferred")
+                transferred = st.checkbox(
+                    "Transferred student?", 
+                    key="transferred",
+                    disabled=student_lookup_mode
+                )
                 if transferred:
-                    prev_ca = st.selectbox("Previous school CA status", 
-                                         ["Unknown", "Yes", "No"], key="prev_ca")
+                    prev_ca = st.selectbox(
+                        "Previous school CA status", 
+                        ["Unknown", "Yes", "No"], 
+                        key="prev_ca",
+                        disabled=student_lookup_mode
+                    )
         
         submitted = st.form_submit_button("Check Risk", type="primary")
     
     if submitted:
-        input_data = {
-            'Student_ID': student_id,
-            'Grade': grade,
-            'Gender': gender,
-            'Present_Days': present_days,
-            'Absent_Days': absent_days,
-            'Meal_Code': meal_code,
-            'Academic_Performance': academic_performance
-        }
+        # Use fetched student data if available, otherwise use manual input
+        if st.session_state.student_data:
+            input_data = st.session_state.student_data
+        else:
+            input_data = {
+                'Student_ID': student_id,
+                'Grade': grade,
+                'Gender': gender,
+                'Present_Days': present_days,
+                'Absent_Days': absent_days,
+                'Meal_Code': meal_code,
+                'Academic_Performance': academic_performance
+            }
         
-        attendance_pct = (present_days / (present_days + absent_days)) * 100
+        attendance_pct = (input_data['Present_Days'] / 
+                         (input_data['Present_Days'] + input_data['Absent_Days'])) * 100
         risk = predict_ca_risk(input_data, st.session_state.model)
         
         if risk is not None:
             risk = float(risk[0])
             
-            if st.session_state.citywide_mode and transferred and prev_ca == "Yes":
+            if st.session_state.citywide_mode and 'transferred' in input_data and input_data.get('prev_ca') == "Yes":
                 risk = min(risk * 1.4, 0.99)
             
             thresholds = st.session_state.risk_thresholds
             if risk < thresholds['low']:
-                risk_level = "Low"
+                st.session_state.risk_level = "Low"
                 risk_class = "risk-low"
             elif risk < thresholds['medium']:
-                risk_level = "Medium"
+                st.session_state.risk_level = "Medium"
                 risk_class = "risk-medium"
             else:
-                risk_level = "High"
+                st.session_state.risk_level = "High"
                 risk_class = "risk-high"
+            
+            st.session_state.student_data = input_data
             
             st.subheader("Prediction Results")
             
@@ -703,7 +838,7 @@ def single_student_check():
                 st.markdown(f"""
                 <div class="stMetric">
                     <h3>CA Risk Level</h3>
-                    <p class="{risk_class}" style="font-size: 2rem;">{risk_level}</p>
+                    <p class="{risk_class}" style="font-size: 2rem;">{st.session_state.risk_level}</p>
                     <p>Probability: {risk:.1%}</p>
                 </div>
                 """, unsafe_allow_html=True)
@@ -713,7 +848,7 @@ def single_student_check():
                 <div class="stMetric">
                     <h3>Attendance</h3>
                     <p style="font-size: 2rem;">{attendance_pct:.1f}%</p>
-                    <p>{present_days} present / {absent_days} absent days</p>
+                    <p>{input_data['Present_Days']} present / {input_data['Absent_Days']} absent days</p>
                 </div>
                 """, unsafe_allow_html=True)
             
@@ -740,34 +875,14 @@ def single_student_check():
             
             plot_feature_importance(st.session_state.model)
             
-            if student_id and student_id in st.session_state.student_history:
+            if input_data.get('Student_ID') and input_data['Student_ID'] in st.session_state.student_history:
                 st.subheader("Historical Trends")
-                plot_student_history(student_id)
+                plot_student_history(input_data['Student_ID'])
             
             what_if_analysis(input_data)
             
-            st.subheader("Recommended Actions")
-            if risk_level == "High":
-                st.markdown("""
-                - **Immediate counselor meeting**
-                - **Parent/guardian notification**
-                - **Attendance improvement plan**
-                - **Academic support services**
-                - **Weekly monitoring**
-                """)
-            elif risk_level == "Medium":
-                st.markdown("""
-                - **Monthly check-ins**
-                - **Mentor assignment**
-                - **After-school program referral**
-                - **Quarterly parent meetings**
-                """)
-            else:
-                st.markdown("""
-                - **Continue regular monitoring**
-                - **Positive reinforcement**
-                - **Encourage extracurriculars**
-                """)
+            # Show initial recommendations
+            show_recommendations(st.session_state.risk_level)
 
 def advanced_analytics():
     """Advanced Analytics section"""
