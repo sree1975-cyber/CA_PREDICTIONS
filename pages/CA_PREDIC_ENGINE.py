@@ -634,28 +634,44 @@ def batch_prediction():
                 st.error(f"Error processing file: {str(e)}")
 
 def single_student_check():
-    """Single Student Check section with all fixes"""
+    """Single Student Check with persistent What-If values"""
     st.header("👤 Single Student Check")
     
-    if st.session_state.model is None:
-        st.warning("Please train a model first in the System Training section.")
-        return
-    
-    with st.form(key='student_input_form'):
-        st.subheader("Student Information")
-        
+    # Initialize session state for What-If parameters
+    if 'what_if' not in st.session_state:
+        st.session_state.what_if = {
+            'present': 45,  # Default values
+            'absent': 10,
+            'performance': 75,
+            'results': None
+        }
+
+    # Main input form
+    with st.form(key='student_form'):
         col1, col2 = st.columns(2)
+        
         with col1:
-            student_id = st.text_input("Student ID (Optional)", key="student_id")
+            student_id = st.text_input("Student ID", key="student_id")
             grade = st.selectbox("Grade", range(1, 13), index=5, key="grade")
             gender = st.selectbox("Gender", ["Male", "Female", "Other", "Unknown"], key="gender")
             meal_code = st.selectbox("Meal Code", ["Free", "Reduced", "Paid", "Unknown"], key="meal_code")
         
         with col2:
-            present_days = st.number_input("Present Days", min_value=0, max_value=365, value=45, key="present_days")
-            absent_days = st.number_input("Absent Days", min_value=0, max_value=365, value=10, key="absent_days")
-            academic_performance = st.number_input("Academic Performance (0-100)", 
-                                                min_value=0, max_value=100, value=75, key="academic_performance")
+            # Use session state values for inputs
+            present_days = st.number_input("Present Days", 
+                                         min_value=0, max_value=365, 
+                                         value=st.session_state.what_if['present'],
+                                         key="present_days")
+            
+            absent_days = st.number_input("Absent Days", 
+                                        min_value=0, max_value=365, 
+                                        value=st.session_state.what_if['absent'],
+                                        key="absent_days")
+            
+            academic_performance = st.number_input("Academic Performance", 
+                                                 min_value=0, max_value=100, 
+                                                 value=st.session_state.what_if['performance'],
+                                                 key="academic_performance")
             
             if st.session_state.citywide_mode:
                 transferred = st.checkbox("Transferred student?", key="transferred")
@@ -663,21 +679,32 @@ def single_student_check():
                     prev_ca = st.selectbox("Previous school CA status", 
                                          ["Unknown", "Yes", "No"], key="prev_ca")
         
-        submitted = st.form_submit_button("Check Risk", type="primary")
-    
-    if submitted:
-        input_data = {
-            'Student_ID': student_id,
-            'Grade': grade,
-            'Gender': gender,
-            'Present_Days': present_days,
-            'Absent_Days': absent_days,
-            'Meal_Code': meal_code,
-            'Academic_Performance': academic_performance
-        }
-        
-        attendance_pct = (present_days / (present_days + absent_days)) * 100
-        risk = predict_ca_risk(input_data, st.session_state.model)
+        # Form submit handler
+        if st.form_submit_button("Check Risk", type="primary"):
+            # Store current values in session state
+            st.session_state.what_if.update({
+                'present': present_days,
+                'absent': absent_days,
+                'performance': academic_performance
+            })
+            
+            # Calculate initial risk
+            input_data = {
+                'Student_ID': student_id,
+                'Grade': grade,
+                'Gender': gender,
+                'Present_Days': present_days,
+                'Absent_Days': absent_days,
+                'Meal_Code': meal_code,
+                'Academic_Performance': academic_performance
+            }
+            
+            risk = predict_ca_risk(input_data, st.session_state.model)
+            if risk is not None:
+                st.session_state.what_if['results'] = {
+                    'original_risk': float(risk[0]),
+                    'current_inputs': input_data
+                }
         
         if risk is not None:
             risk = float(risk[0])
