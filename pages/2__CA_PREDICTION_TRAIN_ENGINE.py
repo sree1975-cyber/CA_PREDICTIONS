@@ -283,10 +283,7 @@ if hasattr(st.session_state.model, 'named_estimators_'):
     except Exception as e:
         st.warning(f"Could not generate SHAP explanation: {str(e)}")
 
-# --- All other app logic and sections remain unchanged. ---
-
-
-                
+             
                 # Historical trends
                 if student_id and student_id in st.session_state.student_history:
                     st.subheader("Historical Trends")
