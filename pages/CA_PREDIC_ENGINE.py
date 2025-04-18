@@ -438,7 +438,7 @@ def single_student_check():
                 - **Encourage extracurriculars**
                 """)
 #9: System Training Function
-    def system_training():
+def system_training():
     """System Training section with all original functionality"""
     st.header("🔧 System Training")
     st.markdown("Upload historical data to train the prediction model.")
