@@ -930,14 +930,14 @@ def advanced_analytics():
                     x=monthly_avg['Month'],
                     y=monthly_avg['Attendance_Percentage'],
                     name='Attendance Rate',
-                    line=dict(color='blue')
+                    line=dict(color='blue'))
                 )
                 fig.add_trace(go.Scatter(
                     x=monthly_avg['Month'],
                     y=monthly_avg['CA_Status']*100,
                     name='CA Rate',
                     yaxis='y2',
-                    line=dict(color='red')
+                    line=dict(color='red'))
                 )
                 
                 fig.update_layout(
