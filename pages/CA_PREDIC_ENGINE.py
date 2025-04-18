@@ -437,8 +437,466 @@ def single_student_check():
                 - **Positive reinforcement**
                 - **Encourage extracurriculars**
                 """)
-# 8. Main application structure
-def main():
+#9: System Training Function
+    def system_training():
+    """System Training section with all original functionality"""
+    st.header("🔧 System Training")
+    st.markdown("Upload historical data to train the prediction model.")
+    
+    with st.expander("📋 Data Requirements", expanded=True):
+        st.markdown("""
+        Your Excel file should include these columns:
+        - **Student_ID**: Unique identifier
+        - **School**: School name/code
+        - **Grade**: Grade level (1-12)
+        - **Gender**: Male/Female/Other
+        - **Present_Days**: Number of days present
+        - **Absent_Days**: Number of days absent
+        - **Meal_Code**: Free/Reduced/Paid (SES proxy)
+        - **Academic_Performance**: Score (0-100)
+        - **CA_Status**: Chronic Absenteeism status (YES/NO or 1/0)
+        - **Date**: (Optional) For time-series analysis
+        - **Address**: (Optional) For geographic mapping
+        """)
+    
+    uploaded_file = st.file_uploader(
+        "Upload Historical Data (Excel)", 
+        type=["xlsx", "csv"],
+        help="Upload 2+ years of historical attendance data"
+    )
+    
+    if uploaded_file:
+        try:
+            if uploaded_file.name.endswith('.xlsx'):
+                df = pd.read_excel(uploaded_file)
+            else:
+                df = pd.read_csv(uploaded_file)
+            
+            required_cols = {'Grade', 'Gender', 'Present_Days', 'Absent_Days', 
+                           'Meal_Code', 'Academic_Performance', 'CA_Status'}
+            missing_cols = required_cols - set(df.columns)
+            
+            if missing_cols:
+                st.error(f"Missing required columns: {', '.join(missing_cols)}")
+            else:
+                if 'Date' in df.columns and 'Student_ID' in df.columns:
+                    df['Date'] = pd.to_datetime(df['Date'])
+                    st.session_state.historical_data = df
+                    
+                    for student_id, group in df.groupby('Student_ID'):
+                        st.session_state.student_history[student_id] = group.sort_values('Date')
+                
+                st.subheader("Data Preview")
+                st.dataframe(df.head())
+                
+                if st.button("Train Prediction Model", type="primary"):
+                    with st.spinner("Training model... This may take a few minutes"):
+                        model, report, shap_data = train_model(df)
+                        
+                        if model is not None:
+                            st.session_state.model = model
+                            st.success("Model trained successfully!")
+                            
+                            st.subheader("Model Performance")
+                            st.json({
+                                "Accuracy": report['accuracy'],
+                                "Precision (CA)": report['1']['precision'],
+                                "Recall (CA)": report['1']['recall'],
+                                "F1-Score (CA)": report['1']['f1-score']
+                            })
+                            
+                            # Show feature importance
+                            plot_feature_importance(model)
+                            
+                            # Save model option
+                            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                                joblib.dump(model, tmp.name)
+                                with open(tmp.name, 'rb') as f:
+                                    b64 = base64.b64encode(f.read()).decode()
+                                    href = f'<a href="data:application/octet-stream;base64,{b64}" download="ca_model.pkl">Download Trained Model</a>'
+                                    st.markdown(href, unsafe_allow_html=True)
+            except Exception as e:
+            st.error(f"Error processing file: {str(e)}")
+            
+       #10: Batch Prediction Function
+       def batch_prediction():
+    """Batch Prediction section with all original functionality"""
+    st.header("📊 Batch Prediction")
+    st.markdown("Upload current student data to predict CA risks.")
+    
+    if st.session_state.model is None:
+        st.warning("Please train a model first in the System Training section.")
+    else:
+        st.session_state.citywide_mode = st.checkbox(
+            "Enable Citywide Mode (track students across schools)",
+            value=st.session_state.citywide_mode
+        )
+        
+        uploaded_file = st.file_uploader(
+            "Upload Current Student Data (Excel)", 
+            type=["xlsx", "csv"],
+            help="Upload current term data for prediction"
+        )
+        
+        if uploaded_file:
+            try:
+                if uploaded_file.name.endswith('.xlsx'):
+                    current_df = pd.read_excel(uploaded_file)
+                else:
+                    current_df = pd.read_csv(uploaded_file)
+                
+                required_cols = {'Student_ID', 'Grade', 'Gender', 'Present_Days', 
+                               'Absent_Days', 'Meal_Code', 'Academic_Performance'}
+                missing_cols = required_cols - set(current_df.columns)
+                
+                if missing_cols:
+                    st.error(f"Missing required columns: {', '.join(missing_cols)}")
+                else:
+                    st.subheader("Current Data Preview")
+                    st.dataframe(current_df.head())
+                    
+                    if st.button("Predict CA Risks", type="primary"):
+                        with st.spinner("Predicting risks..."):
+                            current_df['Attendance_Percentage'] = (
+                                current_df['Present_Days'] / 
+                                (current_df['Present_Days'] + current_df['Absent_Days'])
+                            ) * 100
+                            
+                            risks = predict_ca_risk(current_df, st.session_state.model)
+                            
+                            if risks is not None:
+                                current_df['CA_Risk'] = risks
+                                current_df['CA_Risk_Level'] = pd.cut(
+                                    current_df['CA_Risk'],
+                                    bins=[0, st.session_state.risk_thresholds['low'], 
+                                          st.session_state.risk_thresholds['medium'], 
+                                          st.session_state.risk_thresholds['high']],
+                                    labels=['Low', 'Medium', 'High']
+                                )
+                                
+                                st.session_state.current_df = current_df
+                                
+                                st.subheader("Prediction Results")
+                                
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    low_count = (current_df['CA_Risk_Level'] == 'Low').sum()
+                                    st.metric("Low Risk", low_count)
+                                with col2:
+                                    medium_count = (current_df['CA_Risk_Level'] == 'Medium').sum()
+                                    st.metric("Medium Risk", medium_count)
+                                with col3:
+                                    high_count = (current_df['CA_Risk_Level'] == 'High').sum()
+                                    st.metric("High Risk", high_count)
+                                
+                                fig1 = px.pie(
+                                    current_df,
+                                    names='CA_Risk_Level',
+                                    title='Risk Level Distribution',
+                                    color='CA_Risk_Level',
+                                    color_discrete_map={
+                                        'Low': '#2ecc71',
+                                        'Medium': '#f39c12',
+                                        'High': '#e74c3c'
+                                    }
+                                )
+                                st.plotly_chart(fig1, use_container_width=True)
+                                
+                                fig2 = px.box(
+                                    current_df,
+                                    x='Grade',
+                                    y='CA_Risk',
+                                    title='CA Risk Distribution by Grade',
+                                    color='Grade'
+                                )
+                                st.plotly_chart(fig2, use_container_width=True)
+                                
+                                csv = current_df.to_csv(index=False)
+                                st.download_button(
+                                    "Download Predictions",
+                                    csv,
+                                    "ca_predictions.csv",
+                                    "text/csv"
+                                )
+            except Exception as e:
+                st.error(f"Error processing file: {str(e)}")
+                
+        #11 Advanced Analytics Function
+         def advanced_analytics():
+    """Advanced Analytics section with all original functionality"""
+    st.header("📈 Advanced Analytics")
+    st.markdown("Interactive visualizations for deeper insights.")
+    
+    if st.session_state.model is None:
+        st.warning("Please train a model first in the System Training section.")
+    elif st.session_state.current_df.empty:
+        st.warning("No prediction data available. Please run batch predictions first.")
+        if st.button("Generate Sample Data for Demo"):
+            current_df, historical_data = generate_sample_data()
+            st.session_state.current_df = current_df
+            st.session_state.historical_data = historical_data
+            st.success("Sample data generated! Refresh the page to view analytics.")
+    else:
+        df = st.session_state.current_df
+        
+        viz_option = st.selectbox(
+            "Select Visualization",
+            [
+                "Risk Distribution by School",
+                "Attendance vs. Academic Performance",
+                "Risk Heatmap by Grade & SES",
+                "Temporal Attendance Trends",
+                "Cohort Analysis",
+                "Geographic Risk Mapping",
+                "Intervention Cost-Benefit"
+            ]
+        )
+        
+        if viz_option == "Risk Distribution by School":
+            st.subheader("Risk Distribution by School")
+            
+            if 'School' not in df.columns:
+                st.warning("School data not available in predictions.")
+            else:
+                school_stats = df.groupby('School').agg({
+                    'CA_Risk': 'mean',
+                    'Student_ID': 'count'
+                }).rename(columns={'Student_ID': 'Student_Count'})
+                
+                fig = px.scatter(
+                    school_stats,
+                    x='Student_Count',
+                    y='CA_Risk',
+                    size='Student_Count',
+                    color='CA_Risk',
+                    hover_name=school_stats.index,
+                    title='CA Risk Distribution by School',
+                    labels={
+                        'CA_Risk': 'Average CA Risk',
+                        'Student_Count': 'Number of Students'
+                    }
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+        elif viz_option == "Attendance vs. Academic Performance":
+            st.subheader("Attendance vs. Academic Performance")
+            
+            fig = px.scatter(
+                df,
+                x='Attendance_Percentage',
+                y='Academic_Performance',
+                color='CA_Risk_Level',
+                hover_name='Student_ID',
+                title='Attendance vs. Academic Performance',
+                color_discrete_map={
+                    'Low': 'green',
+                    'Medium': 'orange',
+                    'High': 'red'
+                }
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+        elif viz_option == "Risk Heatmap by Grade & SES":
+            st.subheader("Risk Heatmap by Grade & SES")
+            
+            if 'Meal_Code' not in df.columns:
+                st.warning("Meal Code (SES) data not available in predictions.")
+            else:
+                try:
+                    if 'Meal_Code' in st.session_state.label_encoders:
+                        le = st.session_state.label_encoders['Meal_Code']
+                        df['Meal_Code'] = le.inverse_transform(df['Meal_Code'])
+                except:
+                    pass
+                
+                heatmap_data = df.pivot_table(
+                    values='CA_Risk',
+                    index='Grade',
+                    columns='Meal_Code',
+                    aggfunc='mean'
+                )
+                
+                fig = px.imshow(
+                    heatmap_data,
+                    labels=dict(x="Meal Code", y="Grade", color="CA Risk"),
+                    x=heatmap_data.columns,
+                    y=heatmap_data.index,
+                    title='Average CA Risk by Grade and Socioeconomic Status',
+                    color_continuous_scale='Reds'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+        elif viz_option == "Temporal Attendance Trends":
+            st.subheader("Temporal Attendance Trends")
+            
+            if not st.session_state.historical_data.empty:
+                trend_data = st.session_state.historical_data.groupby('Date').agg({
+                    'Attendance_Percentage': 'mean',
+                    'CA_Status': 'mean'
+                }).reset_index()
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=trend_data['Date'],
+                    y=trend_data['Attendance_Percentage'],
+                    name='Attendance Rate',
+                    line=dict(color='blue')
+                ))
+                fig.add_trace(go.Scatter(
+                    x=trend_data['Date'],
+                    y=trend_data['CA_Status']*100,
+                    name='CA Rate',
+                    yaxis='y2',
+                    line=dict(color='red')
+                ))
+                
+                fig.update_layout(
+                    title='Historical Attendance and CA Trends',
+                    yaxis=dict(title='Attendance Percentage'),
+                    yaxis2=dict(
+                        title='CA Rate Percentage',
+                        overlaying='y',
+                        side='right'
+                    )
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("No historical temporal data available")
+        
+        elif viz_option == "Cohort Analysis":
+            st.subheader("Cohort Analysis")
+            
+            if not st.session_state.historical_data.empty:
+                years = st.session_state.historical_data['Date'].dt.year.unique()
+                selected_year = st.selectbox("Select Cohort Year", sorted(years))
+                
+                cohort = st.session_state.historical_data[
+                    st.session_state.historical_data['Date'].dt.year == selected_year
+                ]
+                
+                cohort_students = cohort['Student_ID'].unique()
+                cohort_trends = st.session_state.historical_data[
+                    st.session_state.historical_data['Student_ID'].isin(cohort_students)
+                ]
+                
+                cohort_trends['Month'] = cohort_trends['Date'].dt.to_period('M')
+                monthly_avg = cohort_trends.groupby('Month').agg({
+                    'Attendance_Percentage': 'mean',
+                    'CA_Status': 'mean'
+                }).reset_index()
+                monthly_avg['Month'] = monthly_avg['Month'].astype(str)
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=monthly_avg['Month'],
+                    y=monthly_avg['Attendance_Percentage'],
+                    name='Attendance Rate',
+                    line=dict(color='blue')
+                )
+                fig.add_trace(go.Scatter(
+                    x=monthly_avg['Month'],
+                    y=monthly_avg['CA_Status']*100,
+                    name='CA Rate',
+                    yaxis='y2',
+                    line=dict(color='red')
+                )
+                
+                fig.update_layout(
+                    title=f'Cohort {selected_year} Monthly Trends',
+                    yaxis=dict(title='Attendance Percentage'),
+                    yaxis2=dict(
+                        title='CA Rate Percentage',
+                        overlaying='y',
+                        side='right'
+                    )
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("No historical data available for cohort analysis")
+        
+        elif viz_option == "Geographic Risk Mapping":
+            generate_geographic_map(df)
+        
+        elif viz_option == "Intervention Cost-Benefit":
+            intervention_cost_benefit(df)
+     #12 System Settings Function
+     def system_settings():
+    """System Settings section with all original functionality"""
+    st.header("⚙️ System Settings")
+    
+    st.subheader("Risk Threshold Configuration")
+    st.markdown("Adjust the probability thresholds for risk levels:")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        low_thresh = st.slider(
+            "Low Risk Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.risk_thresholds['low'],
+            step=0.05,
+            key="low_thresh"
+        )
+    with col2:
+        medium_thresh = st.slider(
+            "Medium Risk Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.risk_thresholds['medium'],
+            step=0.05,
+            key="medium_thresh"
+        )
+    with col3:
+        high_thresh = st.slider(
+            "High Risk Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.risk_thresholds['high'],
+            step=0.05,
+            disabled=True,
+            key="high_thresh"
+        )
+    
+    if low_thresh >= medium_thresh:
+        st.error("Low risk threshold must be less than medium threshold")
+    else:
+        st.session_state.risk_thresholds = {
+            'low': low_thresh,
+            'medium': medium_thresh,
+            'high': high_thresh
+        }
+        st.success("Thresholds updated successfully!")
+    
+    st.subheader("Intervention Configuration")
+    st.markdown("Configure available interventions and their parameters:")
+    
+    interventions = st.session_state.interventions
+    for name, details in interventions.items():
+        st.markdown(f"**{name}**")
+        col1, col2 = st.columns(2)
+        with col1:
+            new_cost = st.number_input(
+                f"Cost per student ({name})",
+                min_value=0,
+                value=details['cost'],
+                key=f"cost_{name}"
+            )
+        with col2:
+            new_effect = st.slider(
+                f"Effectiveness ({name})",
+                min_value=0.0,
+                max_value=1.0,
+                value=details['effectiveness'],
+                step=0.05,
+                key=f"eff_{name}"
+            )
+        interventions[name] = {'cost': new_cost, 'effectiveness': new_effect}
+    
+    st.session_state.interventions = interventions
+
+    #13: Main Application Structure
+
+    def main():
     st.title("🏫 Enhanced Chronic Absenteeism Early Warning System")
     st.markdown("Predict students at risk of chronic absenteeism (CA) using advanced analytics and machine learning.")
     
